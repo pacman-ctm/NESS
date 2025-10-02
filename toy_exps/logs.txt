@@ -71,6 +71,36 @@ t=2:  53.66%  49.46%  52.40%   ----    ----
 t=3:  53.66%  49.46%  52.40%  51.76%   ---- 
 t=4:  53.66%  49.46%  52.40%  51.76%  50.88%
 
+-------------------
+
+(toyexp) cuong@mysterious-rutherford:~/Projects/OrthoCL/toy_exps$ python toy_splitMNIST_svd.py 
+
+=== [SVD-CL] Training Task 0: Task 1: 0 vs 1 (fit W) ===
+[SVD-CL] After task 0:  99.95%
+
+=== [SVD-CL] Preparing subspace for Task 2: 2 vs 3 (task 1) ===
+  First s_j < 0.01 at j=577; using k=207 columns.
+[SVD-CL] After task 1:  99.95%  62.68%
+
+=== [SVD-CL] Preparing subspace for Task 3: 4 vs 5 (task 2) ===
+  First s_j < 0.01 at j=653; using k=131 columns.
+[SVD-CL] After task 2:  99.95%  62.68%  62.86%
+
+=== [SVD-CL] Preparing subspace for Task 4: 6 vs 7 (task 3) ===
+  First s_j < 0.01 at j=670; using k=114 columns.
+[SVD-CL] After task 3:  99.95%  62.68%  62.86%  83.03%
+
+=== [SVD-CL] Preparing subspace for Task 5: 8 vs 9 (task 4) ===
+  First s_j < 0.01 at j=708; using k=76 columns.
+[SVD-CL] After task 4:  99.95%  62.68%  62.86%  83.03%  73.42%
+
+[SVD-CL] Final accuracy matrix (rows: after task t, cols: u ≤ t):
+t=0:  99.95%   ----    ----    ----    ---- 
+t=1:  99.95%  62.68%   ----    ----    ---- 
+t=2:  99.95%  62.68%  62.86%   ----    ---- 
+t=3:  99.95%  62.68%  62.86%  83.03%   ---- 
+t=4:  99.95%  62.68%  62.86%  83.03%  73.42%
+
 ------------------- (eps_1 = 1e-2, epochs_per_tasks=10)
 
 (toyexp) cuong@mysterious-rutherford:~/Projects/OrthoCL/toy_exps$ python toy_splitMNIST_svd.py 
