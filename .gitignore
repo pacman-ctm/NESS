@@ -9,6 +9,7 @@ venv/
 
 # Ignore datasets and experiments
 toy_exps/data/
+# toy_exps/logs
 # checkpoints/
 # logs/
 

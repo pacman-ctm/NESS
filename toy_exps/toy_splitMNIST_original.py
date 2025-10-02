@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader
 from torchvision import datasets, transforms
+import time
 
 # ---------- Data ----------
 def make_split_mnist(root="./data", train_bs=64, test_bs=512, seed=0):
@@ -83,4 +84,7 @@ def run_baseline(epochs_per_task=3, lr=0.1, weight_decay=0.0, seed=0):
     return model, acc
 
 if __name__ == "__main__":
+    start_time = time.time()
     run_baseline(epochs_per_task=3, lr=0.1, weight_decay=0.1, seed=0)
+    print(f"Training time = {time.time() - start_time}")
+    print("\n ------------------- \n")

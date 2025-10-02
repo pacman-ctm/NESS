@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader
 from torchvision import datasets, transforms
+import time
 
 # ----------------------------
 # Data
@@ -50,19 +51,74 @@ def make_split_mnist_tasks(
         })
     return stream
 
+# ----------------------------
+# Debug: Print ranks
+# ----------------------------
+@torch.no_grad()
+def _numerical_rank(A: torch.Tensor, eps: float = 1e-6) -> int:
+    s = torch.linalg.svdvals(A)
+    if s.numel() == 0:
+        return 0
+    tol = eps * max(A.shape) * s.max()
+    return int((s > tol).sum().item())
 
+def _as_2d_weight(m: nn.Module) -> torch.Tensor | None:
+    W = getattr(m, "weight", None)
+    if W is None:
+        return None
+    if isinstance(m, nn.Linear):
+        return W.detach()                      # [out, in]
+    if isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+        return W.detach().flatten(1)           # [out, in*kH*kW*(kD)]
+    if isinstance(m, nn.Embedding):
+        return W.detach()                      # [num_embeddings, dim]
+    return None
+
+@torch.no_grad()
+def print_weight_ranks(model: nn.Module, eps: float = 1e-6) -> None:
+    items = []
+    for name, module in model.named_modules():
+        W2 = _as_2d_weight(module)
+        if W2 is not None:
+            r = _numerical_rank(W2, eps=eps)
+            shape = tuple(W2.shape)
+            items.append((name + ".weight", r, shape))
+    line = " | ".join(f"{n}: rank={r} (shape={s})" for n, r, s in items)
+    print("[RANK] " + (line if line else "no weight matrices found"))
+
+# ----------------------------
+# Network
+# ----------------------------
 class SVDLinearCL(nn.Module):
-    def __init__(self, in_features=784, rep_dim=50, num_tasks=5):
+    def __init__(self, in_features=784, rep_dim=50, hidden_dim=50, num_tasks=5):
         super().__init__()
         self.W = nn.Parameter(torch.zeros(in_features, rep_dim), requires_grad=False)
-        self.heads = nn.ModuleList([nn.Linear(rep_dim, 1) for _ in range(num_tasks)])
+        self.heads = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(rep_dim, hidden_dim),
+                nn.Linear(hidden_dim, 1)
+            ) for _ in range(num_tasks)
+        ])
 
     def forward_with_W(self, x, W_eff, task_id):
-        z = x @ W_eff
+        z = x @ W_eff        # [N, rep_dim]
         return self.heads[task_id](z).squeeze(1)
 
     def forward(self, x, task_id):
         return self.forward_with_W(x, self.W, task_id)
+
+    
+    # def __init__(self, in_features=784, rep_dim=50, num_tasks=5):
+    #     super().__init__()
+    #     self.W = nn.Parameter(torch.zeros(in_features, rep_dim), requires_grad=False)
+    #     self.heads = nn.ModuleList([nn.Linear(rep_dim, 1) for _ in range(num_tasks)])
+
+    # def forward_with_W(self, x, W_eff, task_id):
+    #     z = x @ W_eff
+    #     return self.heads[task_id](z).squeeze(1)
+
+    # def forward(self, x, task_id):
+    #     return self.forward_with_W(x, self.W, task_id)
 
 @torch.no_grad()
 def eval_head(model, loader, device, task_id):
@@ -82,9 +138,10 @@ def build_cumulative_X_colwise(task_datasets, device="cpu"):
         Xi = ds.tensors[0]    # [Ni, d]
         xs.append(Xi.t())     # [d, Ni]
     X = torch.cat(xs, dim=1) if xs else None
+    print(f"Shape of X = {X.shape}\n")
     return X.to(device)
 
-def train_task1_fit_W(model, loader, device, epochs=3, lr_W=0.1, wd_W=5e-4, lr_head=0.05, wd_head=0.0):
+def first_task_train(model, loader, device, epochs=3, lr_W=0.1, wd_W=5e-4, lr_head=0.05, wd_head=0.0):
     model.W.requires_grad_(True)
     params = [
         {"params": [model.W], "lr": lr_W, "weight_decay": wd_W},
@@ -176,13 +233,14 @@ def run_training(
     acc = torch.zeros((T, T))
 
     # Task 1: fit W and head_0
-    print(f"\n=== [SVD-CL] Training Task 0: {tasks[0]['name']} (fit W) ===")
-    train_task1_fit_W(
+    print(f"\n=== [SVD-CL] Training first task: {tasks[0]['name']} ===")
+    first_task_train(
         model, tasks[0]["train"], device,
         epochs=epochs_per_task, lr_W=lr_W, wd_W=wd_W, lr_head=lr_head, wd_head=wd_head
     )
     acc[0,0] = eval_head(model, tasks[0]["test"], device, task_id=0)
     print(f"[SVD-CL] After task 0: {100*acc[0,0]:6.2f}%")
+    print_weight_ranks(model)
 
     # Next tasks: projection updates
     seen_train_sets = [tasks[0]["train_dataset"]]
@@ -210,6 +268,7 @@ def run_training(
             acc[t, u] = eval_head(model, tasks[u]["test"], device, task_id=u)
         row = " ".join([f"{100*acc[t,u]:6.2f}%" for u in range(t + 1)])
         print(f"[SVD-CL] After task {t}: {row}")
+        print_weight_ranks(model)
 
     print("\n[SVD-CL] Final accuracy matrix (rows: after task t, cols: u ≤ t):")
     for t in range(T):
@@ -218,12 +277,15 @@ def run_training(
     return model, acc
 
 if __name__ == "__main__":
+    start_time = time.time()
     run_training(
         rep_dim=50,
-        eps_1=1e-4,
-        epochs_per_task=3,
+        eps_1=1e-2,
+        epochs_per_task=10,
         lr_W=0.1, wd_W=5e-4,
         lr_A=0.1, wd_A=1e-4,
         lr_head=0.05, wd_head=0.0,
         seed=0
     )
+    print(f"Training time = {time.time() - start_time}")
+    print("\n ------------------- \n")

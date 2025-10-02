@@ -1,79 +1,3 @@
-Experiments design:
-- Split MNIST to 5 parts (each part with 2 digits, for example part i contains digit 2i and digit 2i+1, and all disjoint) so we can train for 5 continual tasks. I will denote each input part to be X_i (X_1 to X_5).
-- Network: 1-linear-layer or 2-linear-layer
-
-* Baseline: Continual training from scratch
-* Our method:
-- Init matrix X to be 0-matrix, initial weight W = 0-matrix.
-- Fit W with the current dataset (X_1, Y_1)
-- For i from 2 to n:
- + Concat X = [X_1 : ... : X_{i-1} ] (combined all the data from task 1 to task i-1)
- + Get U, S, Vt as the SVD of X
- + Get list of all sigma s_i as singular values from S and the u_i as the columns of U (respectively).
- + Let j to be the maximum s_i that is less than eps_1 = 1e-4.
- + Let U_span = span(u_j,..., u_d) with d is the shape of U (notice that everycase will have the same d = 784 if we play with MNIST).
- + Init trainable matrix W_tilde = 0-matrix (W_tilde.shape should make sure that shape(U_span @ W_tilde) = shape(W) )
- + Train W_tilde using SGD with the i-th task's data (X_i, Y_i) update W = W + U_span @ W_tilde
- + Evaluate with each of the previous outputs (Y_1,..., Y_i)
-
--------------------
-(toyexp) cuong@mysterious-rutherford:~/Projects/OrthoCL/toy_exps$ python toy_splitMNIST_original.py 
-
-=== [BL] Training Task 1: 0 vs 1 (task 0) ===
-[BL] After task 0:  99.91%
-
-=== [BL] Training Task 2: 2 vs 3 (task 1) ===
-[BL] After task 1:  72.58%  97.40%
-
-=== [BL] Training Task 3: 4 vs 5 (task 2) ===
-[BL] After task 2:  47.80%  72.77%  98.77%
-
-=== [BL] Training Task 4: 6 vs 7 (task 3) ===
-[BL] After task 3:  66.67%  82.22%  77.48%  99.19%
-
-=== [BL] Training Task 5: 8 vs 9 (task 4) ===
-[BL] After task 4:  40.05%  58.23%  15.90%  94.81%  96.77%
-
-[BL] Final accuracy matrix:
-t=0:  99.91%   ----    ----    ----    ---- 
-t=1:  72.58%  97.40%   ----    ----    ---- 
-t=2:  47.80%  72.77%  98.77%   ----    ---- 
-t=3:  66.67%  82.22%  77.48%  99.19%   ---- 
-t=4:  40.05%  58.23%  15.90%  94.81%  96.77%
-
--------------------
-(toyexp) cuong@mysterious-rutherford:~/Projects/OrthoCL/toy_exps$ python toy_splitMNIST_svd.py 
-
-=== [SVD-CL] Preparing subspace for Task 1: 0 vs 1 (task 0) ===
-  [SVD-CL] First s_j < 0.0001 at j=580 -> k=204.
-[SVD-CL] After task 0:  53.66%
-
-=== [SVD-CL] Preparing subspace for Task 2: 2 vs 3 (task 1) ===
-  [SVD-CL] First s_j < 0.0001 at j=656 -> k=128.
-[SVD-CL] After task 1:  53.66%  49.46%
-
-=== [SVD-CL] Preparing subspace for Task 3: 4 vs 5 (task 2) ===
-  [SVD-CL] First s_j < 0.0001 at j=671 -> k=113.
-[SVD-CL] After task 2:  53.66%  49.46%  52.40%
-
-=== [SVD-CL] Preparing subspace for Task 4: 6 vs 7 (task 3) ===
-  [SVD-CL] First s_j < 0.0001 at j=712 -> k=72.
-[SVD-CL] After task 3:  53.66%  49.46%  52.40%  51.76%
-
-=== [SVD-CL] Preparing subspace for Task 5: 8 vs 9 (task 4) ===
-  [SVD-CL] First s_j < 0.0001 at j=714 -> k=70.
-[SVD-CL] After task 4:  53.66%  49.46%  52.40%  51.76%  50.88%
-
-[SVD-CL] Final accuracy matrix (rows: after task t, cols: test head u ≤ t):
-t=0:  53.66%   ----    ----    ----    ---- 
-t=1:  53.66%  49.46%   ----    ----    ---- 
-t=2:  53.66%  49.46%  52.40%   ----    ---- 
-t=3:  53.66%  49.46%  52.40%  51.76%   ---- 
-t=4:  53.66%  49.46%  52.40%  51.76%  50.88%
-
-------------------- (eps_1 = 1e-2, epochs_per_tasks=10)
-
-(toyexp) cuong@mysterious-rutherford:~/Projects/OrthoCL/toy_exps$ python toy_splitMNIST_svd.py 
 
 === [SVD-CL] Training first task: Task 1: 0 vs 1 ===
 [SVD-CL] After task 0:  99.95%
@@ -113,10 +37,10 @@ t=1:  99.95%  62.68%   ----    ----    ----
 t=2:  99.95%  62.68%  62.86%   ----    ---- 
 t=3:  99.95%  62.68%  62.86%  83.03%   ---- 
 t=4:  99.95%  62.68%  62.86%  83.03%  73.42%
+Training time = 219.50141549110413
 
-------------------- (same as above but I change to 2-layer linear network)
+ ------------------- 
 
-(toyexp) cuong@mysterious-rutherford:~/Projects/OrthoCL/toy_exps$ python toy_splitMNIST_svd.py 
 
 === [SVD-CL] Training first task: Task 1: 0 vs 1 ===
 [SVD-CL] After task 0:  99.95%
@@ -156,56 +80,7 @@ t=1:  99.95%  57.54%   ----    ----    ----
 t=2:  99.95%  57.54%  83.67%   ----    ---- 
 t=3:  99.95%  57.54%  83.67%  82.07%   ---- 
 t=4:  99.95%  57.54%  83.67%  82.07%  78.92%
+Training time = 232.42826867103577
 
--------------------
+ ------------------- 
 
-
--------------------
-
-
--------------------
-
-
--------------------
-
-
--------------------
-
-
--------------------
-
-
--------------------
-
-
--------------------
-
-
--------------------
-
-
--------------------
-
-
--------------------
-
-
--------------------
-
-
--------------------
-
-
--------------------
-
-
--------------------
-
-
--------------------
-
-
--------------------
-
-
--------------------
