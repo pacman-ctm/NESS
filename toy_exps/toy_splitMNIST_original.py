@@ -1,0 +1,86 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import TensorDataset, DataLoader
+from torchvision import datasets, transforms
+
+# ---------- Data ----------
+def make_split_mnist(root="./data", train_bs=64, test_bs=512, seed=0):
+    g = torch.Generator().manual_seed(seed)
+    tfm = transforms.ToTensor()
+    tr_ds = datasets.MNIST(root, train=True,  transform=tfm, download=True)
+    te_ds = datasets.MNIST(root, train=False, transform=tfm, download=True)
+    pairs = [(0,1),(2,3),(4,5),(6,7),(8,9)]
+    def subset(ds, a, b):
+        x, y = ds.data.float()/255.0, ds.targets
+        m = (y==a)|(y==b)
+        x = x[m].view(-1, 28*28)   # flatten
+        y = (y[m]==b).long()
+        return TensorDataset(x, y)
+    tasks = []
+    for i,(a,b) in enumerate(pairs,1):
+        tr = subset(tr_ds, a, b)
+        te = subset(te_ds, a, b)
+        tasks.append({
+            "name": f"Task {i}: {a} vs {b}",
+            "train": DataLoader(tr, batch_size=train_bs, shuffle=True, generator=g,
+                                pin_memory=torch.cuda.is_available(), num_workers=2),
+            "test":  DataLoader(te, batch_size=test_bs, shuffle=False,
+                                pin_memory=torch.cuda.is_available(), num_workers=2),
+        })
+    return tasks
+
+# ---------- Model ----------
+class LinearNet(nn.Module):
+    def __init__(self, d=784): 
+        super().__init__() 
+        self.fc = nn.Linear(d, 1)
+    def forward(self, x): 
+        return self.fc(x).squeeze(1)
+
+# ---------- Train / Eval ----------
+@torch.no_grad()
+def eval_bin(model, loader, device):
+    model.eval(); c=n=0
+    for x,y in loader:
+        x,y = x.to(device), y.to(device)
+        pred = (torch.sigmoid(model(x))>=0.5).long()
+        c += (pred==y).sum().item(); n += y.numel()
+    return c/max(1,n)
+
+def train_task(model, loader, opt, device, epochs=3, log_every=None):
+    model.train()
+    for ep in range(1, epochs+1):
+        for it,(x,y) in enumerate(loader,1):
+            x,y = x.to(device), y.float().to(device)
+            opt.zero_grad()
+            F.binary_cross_entropy_with_logits(model(x), y).backward()
+            opt.step()
+            if log_every and it%log_every==0:
+                print(f"[BL] epoch {ep} iter {it} loss={F.binary_cross_entropy_with_logits(model(x), y).item():.4f}")
+
+# ---------- Run ----------
+def run_baseline(epochs_per_task=3, lr=0.1, weight_decay=0.0, seed=0):
+    torch.manual_seed(seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    tasks = make_split_mnist(seed=seed)
+    model = LinearNet().to(device)
+    opt = torch.optim.SGD(model.parameters(), lr=lr, weight_decay=weight_decay)
+
+    T = len(tasks); acc = torch.zeros(T, T)
+    for t in range(T):
+        print(f"\n=== [BL] Training {tasks[t]['name']} (task {t}) ===")
+        train_task(model, tasks[t]["train"], opt, device, epochs=epochs_per_task)
+        for u in range(t+1):
+            acc[t,u] = eval_bin(model, tasks[u]["test"], device)
+        row = " ".join(f"{100*acc[t,u]:6.2f}%" for u in range(t+1))
+        print(f"[BL] After task {t}: {row}")
+
+    print("\n[BL] Final accuracy matrix:")
+    for t in range(T):
+        row = " ".join(f"{100*acc[t,u]:6.2f}%" if u<=t else "  ---- " for u in range(T))
+        print(f"t={t}: {row}")
+    return model, acc
+
+if __name__ == "__main__":
+    run_baseline(epochs_per_task=3, lr=0.1, weight_decay=0.1, seed=0)

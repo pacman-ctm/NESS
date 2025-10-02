@@ -1,0 +1,79 @@
+(toyexp) cuong@mysterious-rutherford:~/Projects/OrthoCL/toy_exps$ python toy_splitMNIST_original.py 
+
+=== [BL] Training Task 1: 0 vs 1 (task 0) ===
+[BL] After task 0:  99.91%
+
+=== [BL] Training Task 2: 2 vs 3 (task 1) ===
+[BL] After task 1:  72.58%  97.40%
+
+=== [BL] Training Task 3: 4 vs 5 (task 2) ===
+[BL] After task 2:  47.80%  72.77%  98.77%
+
+=== [BL] Training Task 4: 6 vs 7 (task 3) ===
+[BL] After task 3:  66.67%  82.22%  77.48%  99.19%
+
+=== [BL] Training Task 5: 8 vs 9 (task 4) ===
+[BL] After task 4:  40.05%  58.23%  15.90%  94.81%  96.77%
+
+[BL] Final accuracy matrix:
+t=0:  99.91%   ----    ----    ----    ---- 
+t=1:  72.58%  97.40%   ----    ----    ---- 
+t=2:  47.80%  72.77%  98.77%   ----    ---- 
+t=3:  66.67%  82.22%  77.48%  99.19%   ---- 
+t=4:  40.05%  58.23%  15.90%  94.81%  96.77%
+
+-------------------
+(toyexp) cuong@mysterious-rutherford:~/Projects/OrthoCL/toy_exps$ python toy_splitMNIST_svd.py 
+
+=== [SVD-CL] Preparing subspace for Task 1: 0 vs 1 (task 0) ===
+  [SVD-CL] First s_j < 0.0001 at j=580 -> k=204.
+[SVD-CL] After task 0:  53.66%
+
+=== [SVD-CL] Preparing subspace for Task 2: 2 vs 3 (task 1) ===
+  [SVD-CL] First s_j < 0.0001 at j=656 -> k=128.
+[SVD-CL] After task 1:  53.66%  49.46%
+
+=== [SVD-CL] Preparing subspace for Task 3: 4 vs 5 (task 2) ===
+  [SVD-CL] First s_j < 0.0001 at j=671 -> k=113.
+[SVD-CL] After task 2:  53.66%  49.46%  52.40%
+
+=== [SVD-CL] Preparing subspace for Task 4: 6 vs 7 (task 3) ===
+  [SVD-CL] First s_j < 0.0001 at j=712 -> k=72.
+[SVD-CL] After task 3:  53.66%  49.46%  52.40%  51.76%
+
+=== [SVD-CL] Preparing subspace for Task 5: 8 vs 9 (task 4) ===
+  [SVD-CL] First s_j < 0.0001 at j=714 -> k=70.
+[SVD-CL] After task 4:  53.66%  49.46%  52.40%  51.76%  50.88%
+
+[SVD-CL] Final accuracy matrix (rows: after task t, cols: test head u ≤ t):
+t=0:  53.66%   ----    ----    ----    ---- 
+t=1:  53.66%  49.46%   ----    ----    ---- 
+t=2:  53.66%  49.46%  52.40%   ----    ---- 
+t=3:  53.66%  49.46%  52.40%  51.76%   ---- 
+t=4:  53.66%  49.46%  52.40%  51.76%  50.88%
+
+-------------------
+
+
+-------------------
+
+
+-------------------
+
+
+-------------------
+
+
+-------------------
+
+
+-------------------
+
+
+-------------------
+
+
+-------------------
+
+
+-------------------
