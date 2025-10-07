@@ -1,0 +1,63 @@
+Running: python toy_splitMNIST_svd.py
+Traceback (most recent call last):
+  File "/ephemeral/home2/cuong/Projects/OrthoCL/toy_exps/toy_splitMNIST_svd.py", line 1, in <module>
+    import torch
+ModuleNotFoundError: No module named 'torch'
+Running: python toy_splitMNIST_svd.py
+
+=== [OURS] Training Task 1: 0 vs 1 (task 0) ===
+Running: python toy_splitMNIST_original.py
+
+=== [BL] Training Task 1: 0 vs 1 (task 0) ===
+[BL] After task 0:  99.91%
+
+=== [BL] Training Task 2: 2 vs 3 (task 1) ===
+[BL] After task 1:  56.69%  96.62%
+
+=== [BL] Training Task 3: 4 vs 5 (task 2) ===
+[BL] After task 2:  47.71%  68.81%  98.61%
+
+=== [BL] Training Task 4: 6 vs 7 (task 3) ===
+[BL] After task 3:  73.00%  73.60%  37.73%  99.14%
+
+=== [BL] Training Task 5: 8 vs 9 (task 4) ===
+[BL] After task 4:  38.77%  50.59%  10.94%  75.08%  96.42%
+
+[BL] Final accuracy matrix:
+t=0:  99.91%   ----    ----    ----    ---- 
+t=1:  56.69%  96.62%   ----    ----    ---- 
+t=2:  47.71%  68.81%  98.61%   ----    ---- 
+t=3:  73.00%  73.60%  37.73%  99.14%   ---- 
+t=4:  38.77%  50.59%  10.94%  75.08%  96.42%
+Training time = 11.098993301391602
+
+ ------------------- 
+
+Running: python toy_splitMNIST_svd.py
+
+=== [OURS] Training Task 1: 0 vs 1 (task 0) ===
+[OURS] After task 0:  99.91%   ----    ----    ----    ---- 
+
+=== [OURS] Training Task 2: 2 vs 3 (task 1) ===
+[OURS] t=1: j=577, U_span.shape=(784, 207), U.shape=(12665, 784), S.shape=(784,)
+[OURS] t=1: S_max(X) = 448.675751
+[OURS] After task 1:  99.91%  50.54%
+
+=== [OURS] Training Task 3: 4 vs 5 (task 2) ===
+[OURS] t=2: j=653, U_span.shape=(784, 131), U.shape=(24754, 784), S.shape=(784,)
+[OURS] t=2: S_max(X) = 475.638092
+[OURS] After task 2:  99.91%  50.54%  66.38%
+
+=== [OURS] Training Task 4: 6 vs 7 (task 3) ===
+[OURS] t=3: j=670, U_span.shape=(784, 114), U.shape=(36017, 784), S.shape=(784,)
+[OURS] t=3: S_max(X) = 500.372681
+[OURS] After task 3:  99.91%  50.54%  65.74%  64.65%
+
+=== [OURS] Training Task 5: 8 vs 9 (task 4) ===
+[OURS] t=4: j=708, U_span.shape=(784, 76), U.shape=(48200, 784), S.shape=(784,)
+[OURS] t=4: S_max(X) = 529.709290
+[OURS] After task 4:  99.91%  50.54%  64.73%  64.45%  70.85%
+Training time = 109.48468804359436
+
+ ------------------- 
+

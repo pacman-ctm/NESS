@@ -15,7 +15,7 @@ def make_split_mnist(root="./data", train_bs=64, test_bs=512, seed=0):
     def subset(ds, a, b):
         x, y = ds.data.float()/255.0, ds.targets
         m = (y==a)|(y==b)
-        x = x[m].view(-1, 28*28)   # flatten
+        x = x[m].view(-1, 28*28)
         y = (y[m]==b).long()
         return TensorDataset(x, y)
     tasks = []
@@ -32,12 +32,31 @@ def make_split_mnist(root="./data", train_bs=64, test_bs=512, seed=0):
     return tasks
 
 # ---------- Model ----------
-class LinearNet(nn.Module):
-    def __init__(self, d=784): 
-        super().__init__() 
-        self.fc = nn.Linear(d, 1)
-    def forward(self, x): 
-        return self.fc(x).squeeze(1)
+class SimpleNet(nn.Module):
+    """
+    y = W2 * act(W1 * x + b1) + b2
+    """
+    def __init__(self, d=784, h=256, act="relu"):
+        super().__init__()
+        self.fc1 = nn.Linear(d, h)
+        self.fc2 = nn.Linear(h, 1)
+        if act.lower() == "relu":
+            self.act = nn.ReLU()
+        elif act.lower() == "tanh":
+            self.act = nn.Tanh()
+        elif act.lower() == "gelu":
+            self.act = nn.GELU()
+        else:
+            raise ValueError(f"Unsupported activation: {act}")
+
+        # (Optional) sensible init for ReLU networks
+        # nn.init.kaiming_normal_(self.fc1.weight, nonlinearity="relu")
+        # nn.init.zeros_(self.fc1.bias)
+        # nn.init.zeros_(self.fc2.bias)
+
+    def forward(self, x):
+        z = self.act(self.fc1(x))
+        return self.fc2(z).squeeze(1)  # logits
 
 # ---------- Train / Eval ----------
 @torch.no_grad()
@@ -51,21 +70,31 @@ def eval_bin(model, loader, device):
 
 def train_task(model, loader, opt, device, epochs=3, log_every=None):
     model.train()
+    it_global = 0
     for ep in range(1, epochs+1):
         for it,(x,y) in enumerate(loader,1):
+            it_global += 1
             x,y = x.to(device), y.float().to(device)
             opt.zero_grad()
-            F.binary_cross_entropy_with_logits(model(x), y).backward()
+            logits = model(x)
+            loss = F.binary_cross_entropy_with_logits(logits, y)
+            loss.backward()
             opt.step()
-            if log_every and it%log_every==0:
-                print(f"[BL] epoch {ep} iter {it} loss={F.binary_cross_entropy_with_logits(model(x), y).item():.4f}")
+            if log_every and it_global % log_every == 0:
+                print(f"[BL] epoch {ep} iter {it} loss={loss.item():.4f}")
 
 # ---------- Run ----------
-def run_baseline(epochs_per_task=3, lr=0.1, weight_decay=0.0, seed=0):
+def run_baseline(epochs_per_task=3, lr=0.1, weight_decay=0.0, seed=0, hidden_size=256, act="relu"):
     torch.manual_seed(seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+
     tasks = make_split_mnist(seed=seed)
-    model = LinearNet().to(device)
+    model = SimpleNet(d=784, h=hidden_size, act=act).to(device)
     opt = torch.optim.SGD(model.parameters(), lr=lr, weight_decay=weight_decay)
 
     T = len(tasks); acc = torch.zeros(T, T)
@@ -85,6 +114,13 @@ def run_baseline(epochs_per_task=3, lr=0.1, weight_decay=0.0, seed=0):
 
 if __name__ == "__main__":
     start_time = time.time()
-    run_baseline(epochs_per_task=3, lr=0.1, weight_decay=0.1, seed=0)
+    run_baseline(
+        epochs_per_task=3,
+        lr=0.1,
+        weight_decay=0.1,
+        seed=0,
+        hidden_size=256, 
+        act="relu"       
+    )
     print(f"Training time = {time.time() - start_time}")
     print("\n ------------------- \n")
