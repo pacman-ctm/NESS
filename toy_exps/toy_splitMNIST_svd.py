@@ -206,8 +206,9 @@ def train_later_tasks(model, heads, tasks, epochs_per_task=3, lr=0.1, weight_dec
 
         print(f"\n=== [OURS] Training {tasks[t]['name']} (task {t}) ===")
         print(f"[OURS] t={t}: j={j}, U_span.shape={tuple(U_span.shape)}, "
-              f"U.shape={(X_prev.shape[0], S.numel()) if S.numel()>0 else (0,0)}, "
+              f"X.shape={(X_prev.shape[0], S.numel()) if S.numel()>0 else (0,0)}, "
               f"S.shape={tuple(S.shape)}")
+        print(f"[OURS] eps_1 = {eps1}")
         print(f"[OURS] t={t}: S_max(X) = {Smax:.6f}")
 
         model.train(); head_t.train()
@@ -264,9 +265,8 @@ if __name__ == "__main__":
     model, heads, acc_later = train_later_tasks(
         model, heads, tasks,
         epochs_per_task=5, lr=0.1, weight_decay=0.1,
-        seed=0, log_every=None, eps1=1e-2, center=True, relative=False
+        seed=0, log_every=None, eps1=1e4, center=True, relative=False
     )
 
     print(f"Training time = {time.time() - start_time}")
     print("\n ------------------- \n")
-

@@ -1,0 +1,62 @@
+
+=== [OURS] Training Task 1: 0 vs 1 (task 0) ===
+[OURS] After task 0:  99.91%   ----    ----    ----    ---- 
+
+=== [OURS] Training Task 2: 2 vs 3 (task 1) ===
+[OURS] t=1: j=577, U_span.shape=(784, 207), X.shape=(12665, 784), S.shape=(784,)
+[OURS] eps_1 = 0.01
+[OURS] t=1: S_max(X) = 448.675751
+[OURS] After task 1:  99.91%  50.54%
+
+=== [OURS] Training Task 3: 4 vs 5 (task 2) ===
+[OURS] t=2: j=653, U_span.shape=(784, 131), X.shape=(24754, 784), S.shape=(784,)
+[OURS] eps_1 = 0.01
+[OURS] t=2: S_max(X) = 475.638092
+[OURS] After task 2:  99.91%  50.54%  66.38%
+
+=== [OURS] Training Task 4: 6 vs 7 (task 3) ===
+[OURS] t=3: j=670, U_span.shape=(784, 114), X.shape=(36017, 784), S.shape=(784,)
+[OURS] eps_1 = 0.01
+[OURS] t=3: S_max(X) = 500.372681
+[OURS] After task 3:  99.91%  50.54%  65.74%  64.65%
+
+=== [OURS] Training Task 5: 8 vs 9 (task 4) ===
+[OURS] t=4: j=708, U_span.shape=(784, 76), X.shape=(48200, 784), S.shape=(784,)
+[OURS] eps_1 = 0.01
+[OURS] t=4: S_max(X) = 529.709290
+[OURS] After task 4:  99.91%  50.54%  64.73%  64.45%  70.85%
+Training time = 99.73027920722961
+
+ ------------------- 
+
+
+=== [OURS] Training Task 1: 0 vs 1 (task 0) ===
+[OURS] After task 0:  99.91%   ----    ----    ----    ---- 
+
+=== [OURS] Training Task 2: 2 vs 3 (task 1) ===
+[OURS] t=1: j=0, U_span.shape=(784, 784), X.shape=(12665, 784), S.shape=(784,)
+[OURS] eps_1 = 10000.0
+[OURS] t=1: S_max(X) = 448.675751
+[OURS] After task 1:  99.91%  97.01%
+
+=== [OURS] Training Task 3: 4 vs 5 (task 2) ===
+[OURS] t=2: j=0, U_span.shape=(784, 784), X.shape=(24754, 784), S.shape=(784,)
+[OURS] eps_1 = 10000.0
+[OURS] t=2: S_max(X) = 475.638092
+[OURS] After task 2:  99.86%  95.64%  98.29%
+
+=== [OURS] Training Task 4: 6 vs 7 (task 3) ===
+[OURS] t=3: j=0, U_span.shape=(784, 784), X.shape=(36017, 784), S.shape=(784,)
+[OURS] eps_1 = 10000.0
+[OURS] t=3: S_max(X) = 500.372681
+[OURS] After task 3:  99.76%  94.52%  98.29%  99.14%
+
+=== [OURS] Training Task 5: 8 vs 9 (task 4) ===
+[OURS] t=4: j=0, U_span.shape=(784, 784), X.shape=(48200, 784), S.shape=(784,)
+[OURS] eps_1 = 10000.0
+[OURS] t=4: S_max(X) = 529.709290
+[OURS] After task 4:  99.76%  94.61%  98.45%  98.54%  96.42%
+Training time = 100.54566597938538
+
+ ------------------- 
+
