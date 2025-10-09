@@ -38,7 +38,7 @@ class SimpleNet(nn.Module):
     """
     y = W2 * act(W1 * x + b1) + b2
     """
-    def __init__(self, d=784, h=256, act="relu"):
+    def __init__(self, d=784, h=64, act="relu"):
         super().__init__()
         self.fc1 = nn.Linear(d, h)
         self.fc2 = nn.Linear(h, 1)
@@ -50,11 +50,6 @@ class SimpleNet(nn.Module):
             self.act = nn.GELU()
         else:
             raise ValueError(f"Unsupported activation: {act}")
-
-        # (Optional) sensible init for ReLU networks
-        # nn.init.kaiming_normal_(self.fc1.weight, nonlinearity="relu")
-        # nn.init.zeros_(self.fc1.bias)
-        # nn.init.zeros_(self.fc2.bias)
 
     def forward(self, x):
         z = self.act(self.fc1(x))
@@ -108,7 +103,7 @@ def svd_complement_subspace_eps(X, eps1, center=True, relative=False):
 
 # ---------- Run Ours ----------
 def train_task_0(epochs_per_task=3, lr=0.1, weight_decay=0.0, seed=0,
-                 hidden_size=256, act="relu", log_every=None):
+                 hidden_size=64, act="relu", log_every=None):
     torch.manual_seed(seed)
     # Device
     if torch.cuda.is_available():
@@ -120,9 +115,11 @@ def train_task_0(epochs_per_task=3, lr=0.1, weight_decay=0.0, seed=0,
 
     tasks = make_split_mnist(seed=seed)
     model = SimpleNet(d=784, h=hidden_size, act=act).to(device)
+    print(f"[OURS] Task 0 model: {model}")
 
     # per-task heads
     heads = nn.ModuleList([nn.Linear(hidden_size, 1).to(device)])
+    print(f"[OURS] Task 0 heads: {heads}")
 
     opt = torch.optim.SGD(
         list(model.fc1.parameters()) + list(heads[0].parameters()),
@@ -154,7 +151,7 @@ def train_task_0(epochs_per_task=3, lr=0.1, weight_decay=0.0, seed=0,
 
     return model, heads, acc, tasks
 
-def train_later_tasks(model, heads, tasks, epochs_per_task=3, lr=0.1, weight_decay=0.0,
+def train_later_tasks(model, heads, tasks, acc, epochs_per_task=3, lr=0.1, weight_decay=0.0,
                       seed=0, log_every=None, eps1=1e1, center=True, relative=False):
     """
     For t >= 1:
@@ -167,8 +164,11 @@ def train_later_tasks(model, heads, tasks, epochs_per_task=3, lr=0.1, weight_dec
     device = next(model.parameters()).device
     dtype  = next(model.parameters()).dtype
 
+    print(f"[OURS] Task 1:t model: {model}")
+    print(f"[OURS] Task 1:t heads: {heads}")
+
     T = len(tasks)
-    acc = torch.zeros(T, T)
+    # acc = torch.zeros(T, T)
 
     for t in range(1, T):
         # ----- Concatenate previous inputs -----
@@ -208,6 +208,7 @@ def train_later_tasks(model, heads, tasks, epochs_per_task=3, lr=0.1, weight_dec
         print(f"[OURS] t={t}: j={j}, U_span.shape={tuple(U_span.shape)}, "
               f"X.shape={(X_prev.shape[0], S.numel()) if S.numel()>0 else (0,0)}, "
               f"S.shape={tuple(S.shape)}")
+        # print(f"[OURS] S = {S}")
         print(f"[OURS] eps_1 = {eps1}")
         print(f"[OURS] t={t}: S_max(X) = {Smax:.6f}")
 
@@ -234,7 +235,8 @@ def train_later_tasks(model, heads, tasks, epochs_per_task=3, lr=0.1, weight_dec
                 loss.backward()
                 opt.step()
 
-                if log_every and (it_global := it_global + 1) % log_every == 0:
+                it_global += 1
+                if log_every and it_global % log_every == 0:
                     print(f"[OURS] epoch {ep} iter {it} loss={loss.item():.4f}")
 
         # ----- Commit update to trunk -----
@@ -253,17 +255,130 @@ def train_later_tasks(model, heads, tasks, epochs_per_task=3, lr=0.1, weight_dec
 
     return model, heads, acc
 
+# ------- BASELINE ---------
+def train_baseline_with_delta(model, loader, opt, device, epochs=3, log_every=None):
+    model.train()
+    it_global = 0
+    for ep in range(1, epochs+1):
+        for it,(x,y) in enumerate(loader,1):
+            it_global += 1
+            x,y = x.to(device), y.float().to(device)
+            opt.zero_grad()
+            logits = model(x)
+            loss = F.binary_cross_entropy_with_logits(logits, y)
+            loss.backward()
+            opt.step()
+            if log_every and it_global % log_every == 0:
+                print(f"[BL] epoch {ep} iter {it} loss={loss.item():.4f}")
+
+def run_baseline(epochs_per_task=3, lr=0.1, weight_decay=0.0, seed=0, hidden_size=64, act="relu", log_every=None):
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+
+    tasks = make_split_mnist(seed=seed)
+    # Create model with only fc1 (feature extractor)
+    model = SimpleNet(d=784, h=hidden_size, act=act).to(device)
+    print(f"[BL] Baseline model: {model}")
+    
+    # Create list to store task-specific heads
+    heads = nn.ModuleList()
+    
+    
+    T = len(tasks)
+    acc = torch.zeros(T, T)
+    
+    for t in range(T):
+        print(f"\n=== [BL] Training {tasks[t]['name']} (task {t}) ===")
+        
+        # Snapshot base parameters before this task (only fc1)
+        with torch.no_grad():
+            W1_base = model.fc1.weight.data.clone()  # (h, d)
+            b1_base = model.fc1.bias.data.clone()    # (h,)
+        
+        # Create delta parameters for fc1 (initialized to zero)
+        delta_W1 = nn.Parameter(torch.zeros_like(W1_base))
+        delta_b1 = nn.Parameter(torch.zeros_like(b1_base))
+        
+        # Create new task-specific head
+        head_t = nn.Linear(hidden_size, 1).to(device)
+        heads.append(head_t)
+        print(f"[BL] Baseline head at task {t}: {heads}")
+        
+        # Optimizer for delta parameters AND the new head
+        opt = torch.optim.SGD([delta_W1, delta_b1] + list(head_t.parameters()), 
+                              lr=lr, weight_decay=weight_decay)
+        
+        # Training loop
+        model.train()
+        head_t.train()
+        it_global = 0
+        for ep in range(1, epochs_per_task+1):
+            for it,(x,y) in enumerate(tasks[t]["train"],1):
+                it_global += 1
+                x,y = x.to(device), y.float().to(device)
+                
+                opt.zero_grad()
+                
+                # Forward pass with W1 = W1_base + delta_W1
+                W1_eff = W1_base + delta_W1
+                b1_eff = b1_base + delta_b1
+                
+                z1 = F.linear(x, W1_eff, b1_eff)
+                h1 = model.act(z1)
+                logits = head_t(h1).squeeze(1)
+                
+                loss = F.binary_cross_entropy_with_logits(logits, y)
+                loss.backward()
+                opt.step()
+                
+                if log_every and it_global % log_every == 0:
+                    print(f"[BL] epoch {ep} iter {it} loss={loss.item():.4f}")
+        
+        # Commit the update to fc1: W <- W_base + delta_W
+        with torch.no_grad():
+            model.fc1.weight.data = W1_base + delta_W1
+            model.fc1.bias.data = b1_base + delta_b1
+        
+        # Evaluate on all tasks seen so far using their respective heads
+        for u in range(t+1):
+            acc[t,u] = eval_bin_with_head(model, heads[u], tasks[u]["test"], device)
+        row = " ".join(f"{100*acc[t,u]:6.2f}%" for u in range(t+1))
+        print(f"[BL] After task {t}: {row}")
+
+    print("\n[BL] Final accuracy matrix:")
+    for t in range(T):
+        row = " ".join(f"{100*acc[t,u]:6.2f}%" if u<=t else "  ---- " for u in range(T))
+        print(f"t={t}: {row}")
+    
+    return model, heads, acc
 
 if __name__ == "__main__":
     start_time = time.time()
+    run_baseline(
+        epochs_per_task=5,
+        lr=0.1,
+        weight_decay=0.1,
+        seed=0,
+        hidden_size=64, 
+        act="relu"       
+    )
+    print(f"Training time = {time.time() - start_time}")
 
-    model, heads, acc0, tasks = train_task_0(
+
+    start_time = time.time()
+
+    model, heads, acc, tasks = train_task_0(
         epochs_per_task=5, lr=0.1, weight_decay=0.1, seed=0,
-        hidden_size=256, act="relu", log_every=None
+        hidden_size=64, act="relu", log_every=None
     )
 
-    model, heads, acc_later = train_later_tasks(
-        model, heads, tasks,
+    model, heads, acc = train_later_tasks(
+        model, heads, tasks, acc,
         epochs_per_task=5, lr=0.1, weight_decay=0.1,
         seed=0, log_every=None, eps1=1e4, center=True, relative=False
     )
