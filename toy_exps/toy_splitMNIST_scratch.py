@@ -6,7 +6,6 @@ from torchvision import datasets, transforms
 from collections import OrderedDict
 import time
 
-# ---------- Data ----------
 def make_split_mnist(root="./data", train_bs=64, test_bs=512, seed=0):
     g = torch.Generator().manual_seed(seed)
     tfm = transforms.ToTensor()
@@ -32,7 +31,6 @@ def make_split_mnist(root="./data", train_bs=64, test_bs=512, seed=0):
         })
     return tasks
 
-# ---------- Model ----------
 class MLPNet(nn.Module):
     def __init__(self, n_hidden=100, n_outputs=1):
         super(MLPNet, self).__init__()
@@ -52,13 +50,10 @@ class MLPNet(nn.Module):
         x = self.fc1(x)
         return x
 
-# ---------- Training ----------
-def train(model, tasks, device, epochs=10, lr=0.01, null_space_dim=100, hidden_lr_scale=0.01):
+def train(model, tasks, device, epochs=10, lr=0.01):
     """
     Continual learning training where W_current = W_previous + W_tilde
-    For task 2 onwards: 
-    - lin1: W_tilde = T @ A, where A spans the null space
-    - lin2, fc1: much smaller learning rate to reduce forgetting
+    W_tilde is initialized as zero matrix for each new task
     """
     criterion = nn.BCEWithLogitsLoss()
     
@@ -69,9 +64,6 @@ def train(model, tasks, device, epochs=10, lr=0.01, null_space_dim=100, hidden_l
     for name, param in model.named_parameters():
         base_weights[name] = param.data.clone().to(device)
     
-    # Store all previous task data
-    all_previous_data = []
-    
     results = []
     
     for task_id, task in enumerate(tasks):
@@ -79,67 +71,13 @@ def train(model, tasks, device, epochs=10, lr=0.01, null_space_dim=100, hidden_l
         print(f"Training on {task['name']}")
         print(f"{'='*60}")
         
-        A = None  # Projection matrix
+        # Initialize W_tilde (task-specific weights) as zeros with requires_grad=True
+        w_tilde = {}
+        for name in base_weights.keys():
+            w_tilde[name] = torch.zeros_like(base_weights[name], requires_grad=True, device=device)
         
-        # For task 2 onwards, perform SVD on all previous task data (X_1 to X_{i-1})
-        if task_id > 0:
-            print(f"\nPerforming SVD on data from all previous tasks (Task 1 to Task {task_id})...")
-            
-            # Combine all previous data: X_all = [X_1, X_2, ..., X_{i-1}]
-            X_all = torch.cat(all_previous_data, dim=0)  # Shape: [N_total, 784]
-            
-            print(f"X_all shape (previous tasks only): {X_all.shape}")
-            
-            # Perform SVD
-            X_all_cpu = X_all.cpu()
-            U, S, Vt = torch.linalg.svd(X_all_cpu, full_matrices=False)
-            
-            # Move back to device
-            S = S.to(device)
-            Vt = Vt.to(device)
-            
-            print(f"SVD completed - U: {U.shape}, S: {S.shape}, Vt: {Vt.shape}")
-            print(f"Singular values range: [{S[0].item():.4f}, {S[-1].item():.6f}]")
-            
-            # Get A: span of the LAST null_space_dim rows (null space)
-            A = Vt[-null_space_dim:, :].clone()  # Shape: [null_space_dim, 784]
-            print(f"A shape (null space projection): {A.shape}")
-        
-        # Collect current task data and add to all_previous_data for next tasks
-        X_current = []
-        for data, target in task['train']:
-            X_current.append(data)
-        X_current = torch.cat(X_current, dim=0).to(device)  # Shape: [N_i, 784]
-        all_previous_data.append(X_current)
-        
-        # Initialize trainable parameters
-        if task_id == 0:
-            # Task 1: Train W_tilde directly (no projection)
-            w_tilde = {}
-            for name in base_weights.keys():
-                w_tilde[name] = torch.zeros_like(base_weights[name], requires_grad=True, device=device)
-            
-            # Single optimizer with same learning rate for all
-            optimizer = torch.optim.SGD(w_tilde.values(), lr=lr)
-            trainable_params = w_tilde
-        else:
-            # Task 2 onwards: Project lin1, use smaller LR for hidden layers
-            T = {}
-            for name in base_weights.keys():
-                weight_shape = base_weights[name].shape
-                if name == 'lin1.weight':
-                    # Project lin1 to null space
-                    T[name] = torch.zeros(weight_shape[0], null_space_dim, requires_grad=True, device=device)
-                else:
-                    # Hidden layers: regular parameterization
-                    T[name] = torch.zeros_like(base_weights[name], requires_grad=True, device=device)
-            
-            # Use different learning rates: full LR for lin1, reduced for hidden layers
-            optimizer = torch.optim.SGD([
-                {'params': [T['lin1.weight']], 'lr': lr},
-                {'params': [T['lin2.weight'], T['fc1.weight']], 'lr': lr * hidden_lr_scale}
-            ])
-            trainable_params = T
+        # Create optimizer for W_tilde only
+        optimizer = torch.optim.SGD(w_tilde.values(), lr=lr)
         
         # Training loop for current task
         for epoch in range(epochs):
@@ -152,30 +90,35 @@ def train(model, tasks, device, epochs=10, lr=0.01, null_space_dim=100, hidden_l
                 
                 optimizer.zero_grad()
                 
-                # Manual forward pass
+                # Manually set model weights as W = W_base + W_tilde (detached base, trainable tilde)
+                for name, param in model.named_parameters():
+                    # This creates the computation graph through w_tilde only
+                    param.data = (base_weights[name] + w_tilde[name]).detach()
+                
+                # Now we need to do a custom forward pass where we track w_tilde
+                # Let's rebuild the forward computation manually
                 x = data
                 
                 # Layer 1: lin1
-                if task_id == 0:
-                    w1 = base_weights['lin1.weight'] + trainable_params['lin1.weight']
-                else:
-                    # W_tilde = T @ A (projected to null space)
-                    w_tilde_lin1 = torch.mm(trainable_params['lin1.weight'], A)
-                    w1 = base_weights['lin1.weight'] + w_tilde_lin1
+                w1 = base_weights['lin1.weight'] + w_tilde['lin1.weight']
                 x = F.linear(x, w1)
                 x = F.relu(x)
                 
                 # Layer 2: lin2
-                w2 = base_weights['lin2.weight'] + trainable_params['lin2.weight']
+                w2 = base_weights['lin2.weight'] + w_tilde['lin2.weight']
                 x = F.linear(x, w2)
                 x = F.relu(x)
                 
                 # Layer 3: fc1
-                w3 = base_weights['fc1.weight'] + trainable_params['fc1.weight']
+                w3 = base_weights['fc1.weight'] + w_tilde['fc1.weight']
                 output = F.linear(x, w3)
                 
                 loss = criterion(output.squeeze(), target.float())
+                
+                # Backward pass - gradients will flow to w_tilde
                 loss.backward()
+                
+                # Update W_tilde
                 optimizer.step()
                 
                 total_loss += loss.item()
@@ -193,14 +136,7 @@ def train(model, tasks, device, epochs=10, lr=0.01, null_space_dim=100, hidden_l
         # Update base weights: W_base = W_base + W_tilde
         with torch.no_grad():
             for name in base_weights.keys():
-                if task_id == 0:
-                    base_weights[name] = base_weights[name] + trainable_params[name].data
-                else:
-                    if name == 'lin1.weight':
-                        w_tilde = torch.mm(trainable_params[name].data, A)
-                        base_weights[name] = base_weights[name] + w_tilde
-                    else:
-                        base_weights[name] = base_weights[name] + trainable_params[name].data
+                base_weights[name] = base_weights[name] + w_tilde[name].data
             
             # Update model weights
             for name, param in model.named_parameters():
@@ -236,9 +172,7 @@ def evaluate(model, test_loader, device):
     accuracy = 100. * correct / total
     return accuracy
 
-# ---------- Main ----------
 def main():
-    # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
@@ -247,8 +181,6 @@ def main():
     n_outputs = 1
     epochs = 5
     lr = 0.01
-    hidden_lr_scale = 0.01  # % of main learning rate for hidden layers
-    null_space_dim = 200
     seed = 0
     
     # Set random seed for reproducibility
@@ -267,8 +199,7 @@ def main():
     
     # Train
     start_time = time.time()
-    results = train(model, tasks, device, epochs=epochs, lr=lr, 
-                   null_space_dim=null_space_dim, hidden_lr_scale=hidden_lr_scale)
+    results = train(model, tasks, device, epochs=epochs, lr=lr)
     end_time = time.time()
     
     # Print final results
@@ -287,7 +218,7 @@ def main():
         avg_acc = sum(final_accs) / len(final_accs)
         print(f"\nAverage Accuracy: {avg_acc:.2f}%")
         
-        # Calculate forgetting
+        # Calculate forgetting (difference between max accuracy and final accuracy)
         forgetting = []
         for task_idx in range(len(tasks) - 1):
             max_acc = max([results[i][task_idx] for i in range(task_idx, len(results))])
