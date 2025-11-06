@@ -8,18 +8,18 @@ For environment:
 For datasets:
 * With CIFAR-100, the dataset is automatically installed during the training process.
 
-For CIFAR-100:
+For experiments with CIFAR-100:
 * Train the continual learning from scratch (to see the maximum accuracy on every tasks and do not care about the forgetting):
 ```
 python main_our_cifar_100_scratch.py
 ```
 
-* Train the continual learning by with full GPU usage (but is bugged because of wrong trainable parameter):
+* Train the continual learning (change the train function from DFGP), full GPU usage (but is bugged because of using trainable parameter for every layer included batch_norm and biases):
 ```
 python main_our_cifar_100_v1_bug.py
 ```
 
-* Train the continual learning by with the version adapted from DFGP (slow because still use CPU in most parts):
+* Train the continual learning by with the version adapted from DFGP (slow because still use CPU in most parts and wrong in weight W after every task):
 ```
 python main_our_cifar_100_v2.py
 ```
