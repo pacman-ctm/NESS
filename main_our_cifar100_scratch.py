@@ -1,0 +1,698 @@
+import torch
+import torch.optim as optim
+import torch.nn as nn
+from torch.autograd import Variable
+import os
+import os.path
+from collections import OrderedDict
+import numpy as np
+import argparse,time
+from copy import deepcopy
+import time
+
+import torch.nn.functional as F
+from torch.utils.data import TensorDataset, DataLoader
+
+from flatness_minima import SAM
+
+## Define AlexNet model
+def compute_conv_output_size(Lin,kernel_size,stride=1,padding=0,dilation=1):
+    return int(np.floor((Lin+2*padding-dilation*(kernel_size-1)-1)/float(stride)+1))
+
+class AlexNet(nn.Module):
+    def __init__(self,taskcla):
+        super(AlexNet, self).__init__()
+        self.act=OrderedDict()
+        self.map =[]
+        self.ksize=[]
+        self.in_channel =[]
+        self.map.append(32)
+        self.conv1 = nn.Conv2d(3, 64, 4, bias=False)
+        self.bn1 = nn.BatchNorm2d(64, track_running_stats=False)
+        s=compute_conv_output_size(32,4)
+        s=s//2
+        self.ksize.append(4)
+        self.in_channel.append(3)
+        self.map.append(s)
+        self.conv2 = nn.Conv2d(64, 128, 3, bias=False)
+        self.bn2 = nn.BatchNorm2d(128, track_running_stats=False)
+        s=compute_conv_output_size(s,3)
+        s=s//2
+        self.ksize.append(3)
+        self.in_channel.append(64)
+        self.map.append(s)
+        self.conv3 = nn.Conv2d(128, 256, 2, bias=False)
+        self.bn3 = nn.BatchNorm2d(256, track_running_stats=False)
+        s=compute_conv_output_size(s,2)
+        s=s//2
+        self.smid=s
+        self.ksize.append(2)
+        self.in_channel.append(128)
+        self.map.append(256*self.smid*self.smid)
+        self.maxpool=torch.nn.MaxPool2d(2)
+        self.relu=torch.nn.ReLU()
+        self.drop1=torch.nn.Dropout(0.2)
+        self.drop2=torch.nn.Dropout(0.5)
+
+        self.fc1 = nn.Linear(256*self.smid*self.smid,2048, bias=False)
+        self.bn4 = nn.BatchNorm1d(2048, track_running_stats=False)
+        self.fc2 = nn.Linear(2048,2048, bias=False)
+        self.bn5 = nn.BatchNorm1d(2048, track_running_stats=False)
+        self.map.extend([2048])
+        
+        self.taskcla = taskcla
+        self.fc3=torch.nn.ModuleList()
+        for t,n in self.taskcla:
+            self.fc3.append(torch.nn.Linear(2048,n,bias=False))
+    def forward(self, x):
+        bsz = deepcopy(x.size(0))
+        self.act['conv1']=x
+        x = self.conv1(x)
+        x = self.maxpool(self.drop1(self.relu(self.bn1(x))))
+
+        self.act['conv2']=x
+        x = self.conv2(x)
+        x = self.maxpool(self.drop1(self.relu(self.bn2(x))))
+
+        self.act['conv3']=x
+        x = self.conv3(x)
+        x = self.maxpool(self.drop2(self.relu(self.bn3(x))))
+
+        x=x.view(bsz,-1)
+        self.act['fc1']=x
+        x = self.fc1(x)
+        x = self.drop2(self.relu(self.bn4(x)))
+
+        self.act['fc2']=x        
+        x = self.fc2(x)
+        x = self.drop2(self.relu(self.bn5(x)))
+
+        y=[]
+        for t,i in self.taskcla:
+            y.append(self.fc3[t](x))
+            
+        return y
+
+def get_model(model):
+    return deepcopy(model.state_dict())
+def set_model_(model,state_dict):
+    model.load_state_dict(deepcopy(state_dict))
+    return
+def adjust_learning_rate(optimizer, epoch, args):
+    for param_group in optimizer.param_groups:
+        if (epoch ==1):
+            param_group['lr']=args.lr
+        else:
+            param_group['lr'] /= args.lr_factor  
+def beta_distributions(size, alpha=1):
+    return np.random.beta(alpha, alpha, size=size)
+
+class AugModule(nn.Module):
+    def __init__(self):
+        super(AugModule, self).__init__()
+
+    def forward(self, xs, lam, y, index):
+        x_ori = xs
+        N = x_ori.size()[0]
+        x_ori_perm = x_ori[index, :]
+        lam = lam.view((N, 1, 1, 1)).expand_as(x_ori)
+        x_mix = (1 - lam) * x_ori + lam * x_ori_perm
+        y_a, y_b = y, y[index]
+        return x_mix, y_a, y_b
+
+def mixup_criterion(criterion, pred, y_a, y_b, lam):
+    loss_a = lam * criterion(pred, y_a)
+    loss_b = (1 - lam) * criterion(pred, y_b)
+    return loss_a.mean() + loss_b.mean()
+
+def train(args, model, device, x,y, optimizer,criterion, task_id):
+    model.train()
+    r=np.arange(x.size(0))
+    np.random.shuffle(r)
+    # r=torch.LongTensor(r).to(device)
+    r = torch.LongTensor(r) # DEBUG
+    aug_model = AugModule()
+    # Loop batches
+    for i in range(0,len(r),args.batch_size_train):
+        if i+args.batch_size_train<=len(r): b=r[i:i+args.batch_size_train]
+        else: b=r[i:]
+        data = x[b]
+        raw_data, raw_target = data.to(device), y[b].to(device)
+
+        # Data Perturbation Step
+        # initialize lamb mix:
+        N = data.shape[0]
+        lam = (beta_distributions(size=N, alpha=args.mixup_alpha)).astype(np.float32)
+        lam_adv = Variable(torch.from_numpy(lam)).to(device)
+        lam_adv = torch.clamp(lam_adv, 0, 1)  # clamp to range [0,1)
+        lam_adv.requires_grad = True
+
+        # index = torch.randperm(N).cuda()
+        index = torch.randperm(N).to(device)
+        # initialize x_mix
+        mix_inputs, mix_targets_a, mix_targets_b = aug_model(raw_data, lam_adv, raw_target, index)
+
+        # Weight and Data Ascent Step
+        output1 = model(raw_data)[task_id]
+        output2 = model(mix_inputs)[task_id]
+        loss = criterion(output1, raw_target) + args.mixup_weight * mixup_criterion(criterion, output2, mix_targets_a, mix_targets_b, lam_adv.detach())
+        loss.backward()
+        grad_lam_adv = lam_adv.grad.data
+        grad_norm = torch.norm(grad_lam_adv, p=2) + 1.e-16
+        lam_adv.data.add_(grad_lam_adv * 0.05 / grad_norm)  # gradient assend by SAM
+        lam_adv = torch.clamp(lam_adv, 0, 1)
+        optimizer.perturb_step()
+
+        # Weight Descent Step
+        mix_inputs, mix_targets_a, mix_targets_b = aug_model(raw_data, lam_adv, raw_target, index)
+        mix_inputs = mix_inputs.detach()
+        lam_adv = lam_adv.detach()
+
+        output1 = model(raw_data)[task_id]
+        output2 = model(mix_inputs)[task_id]
+        loss = criterion(output1, raw_target) + args.mixup_weight * mixup_criterion(criterion, output2, mix_targets_a, mix_targets_b, lam_adv.detach())
+        loss.backward()
+        optimizer.unperturb_step()
+
+        # Update
+        optimizer.step()
+
+def test(args, model, device, x, y, criterion, task_id):
+    model.eval()
+    total_loss = 0
+    total_num = 0 
+    correct = 0
+    r=np.arange(x.size(0))
+    np.random.shuffle(r)
+    # r=torch.LongTensor(r).to(device)
+    r = torch.LongTensor(r) # DEBUG
+    with torch.no_grad():
+        # Loop batches
+        for i in range(0,len(r),args.batch_size_test):
+            if i+args.batch_size_test<=len(r): b=r[i:i+args.batch_size_test]
+            else: b=r[i:]
+            data = x[b]
+            data, target = data.to(device), y[b].to(device)
+            output = model(data)
+            loss = criterion(output[task_id], target)
+            pred = output[task_id].argmax(dim=1, keepdim=True) 
+            
+            correct    += pred.eq(target.view_as(pred)).sum().item()
+            total_loss += loss.data.cpu().numpy().item()*len(b)
+            total_num  += len(b)
+
+    acc = 100. * correct / total_num
+    final_loss = total_loss / total_num
+    return final_loss, acc
+
+# DEBUG: Adapt code
+def im2col(input_tensor, kernel_size, stride, device):
+    """
+    Converts the input tensor into columns.
+
+    Args:
+    input_tensor (torch.Tensor): Input tensor of shape (
+        batch_size, in_channels, height, width).
+    kernel_size (tuple): The size of the convolution kernel (
+        kernel_height, kernel_width).
+    stride (tuple): The stride of the convolution (
+        stride_height, stride_width).
+    device (str): Device to move the tensor to.
+
+    Returns:
+    torch.Tensor: Column matrix.
+    """
+    batch_size, in_channels, height, width = input_tensor.shape
+    kernel_height, kernel_width = kernel_size
+    stride_height, stride_width = stride
+
+    # Calculate output dimensions
+    out_height = (height - kernel_height) // stride_height + 1
+    out_width = (width - kernel_width) // stride_width + 1
+
+    col = torch.zeros(
+        size=(batch_size, in_channels,
+              kernel_height, kernel_width,
+              out_height, out_width)).to(device)
+
+    for y in range(kernel_height):
+        y_max = y + stride_height * out_height
+        for x in range(kernel_width):
+            x_max = x + stride_width * out_width
+            col[:, :, y, x, :, :] = input_tensor[
+                :, :, y:y_max:stride_height, x:x_max:stride_width]
+
+    col = col.permute(0, 4, 5, 1, 2, 3).contiguous()
+    col = col.view(batch_size * out_height * out_width, -1)
+    return col
+
+
+def get_inputs(network, layer, data_loader, max_data_count, device,
+               batchwise_transform=torch.nn.Identity()):
+    # record layer activations
+    inputs = None
+    data_count = 0
+
+    if isinstance(layer, nn.Conv2d):
+        assert layer.dilation == (1, 1), "Dilation not supported"
+        assert layer.groups == 1, "Groups not supported"
+
+    def hook(module: torch.nn.Module, input: torch.Tensor, output: torch.Tensor):
+        nonlocal inputs
+        input_matrix = input[0]
+
+        # if layer is conv2d preprocess input
+        if isinstance(layer, nn.Conv2d):
+            # Padding inputs
+            input_matrix = F.pad(
+                input_matrix, (layer.padding[1], layer.padding[1],
+                               layer.padding[0], layer.padding[0]))
+            # Im2col Images to Columns for replacing convolution
+            # with matrix multiplication
+            input_matrix = im2col(
+                input_matrix, layer.kernel_size, layer.stride, device)
+
+        # if input is from LLM reshape
+        if input_matrix.dim() == 3:
+            input_matrix = input_matrix.reshape(-1, input_matrix.shape[-1])
+
+        if inputs is None:
+            inputs = input_matrix.T @ input_matrix
+        else:
+            inputs += input_matrix.T @ input_matrix
+
+    handle = layer.register_forward_hook(hook)
+
+    with torch.no_grad():
+        for data, target in data_loader:
+            data, target = data.to(device), target.to(device)
+            data = batchwise_transform(data)
+            network(data)
+            data_count += data.size(0)
+            if data_count >= max_data_count:
+                break
+    handle.remove()
+    return inputs
+
+def replace_layer_by_name(model, layer_name, new_layer):
+    def recursive_replace(module, names):
+        if len(names) == 1:
+            if hasattr(module, names[0]):
+                setattr(module, names[0], new_layer)
+                return True
+            else:
+                return False
+        else:
+            name = names[0]
+            if name.isdigit():
+                name = int(name)
+                if isinstance(module, (nn.Sequential, nn.ModuleList)):
+                    if name < len(module):
+                        return recursive_replace(module[name], names[1:])
+                    else:
+                        return False
+            else:
+                child = getattr(module, name, None)
+                if child is None:
+                    return False
+                return recursive_replace(child, names[1:])
+
+    names = layer_name.split('.')
+    if not recursive_replace(model, names):
+        raise ValueError(f"Layer '{layer_name}' not found in the model.")
+
+
+class LinearAdapt(nn.Module):
+    def __init__(self, old_linear: nn.Linear, cross_inputs: torch.Tensor, eps_rel_tol: float = 1e-2):
+        super(LinearAdapt, self).__init__()
+        self.old_linear = old_linear
+        # old linear weight is not trainable
+        self.old_linear.weight.requires_grad = False
+        if self.old_linear.bias is not None:
+            self.old_linear.bias.requires_grad = False
+        self.device = self.old_linear.weight.device
+        # get U and V matrices from cross inputs
+        self._get_UV(cross_inputs, eps_rel_tol)
+
+    def _get_UV(self, inputs: torch.Tensor, eps_rel_tol: float):
+        S_X_squared, V_X = torch.linalg.eigh(inputs)
+        S_X_squared.clamp(min=0.0)  # in-place clamping since matrix is psd
+        V_Xt = V_X.T 
+        S_X = torch.sqrt(S_X_squared)
+        print(f"Singular values: {S_X}")
+
+        eps_tol = eps_rel_tol * S_X.sum()
+        print(f"{eps_rel_tol = } - {eps_tol = }")
+        zero_rank = torch.sum(S_X <= eps_tol).item()
+        # DEBUG: test truncated
+        # zero_rank = 5
+
+        if zero_rank == 0:
+
+            self.weight_U = None
+            self.weight_V = None
+        else:
+            # print(f"V_Xt before truncate = {V_Xt} - shape = {V_Xt.shape}")
+            V_Xt = V_Xt[:zero_rank, :]
+            # V_Xt = V_Xt[-zero_rank:, :]
+            # print(f"V_Xt after truncate = {V_Xt} - shape = {V_Xt.shape}")
+            # not trainable parameter
+            self.weight_V = nn.Parameter(V_Xt.T, requires_grad=False)
+            # trainable parameter initialized to zero
+            self.weight_U = nn.Parameter(torch.zeros(
+                self.old_linear.out_features, zero_rank).to(self.device),
+                                         requires_grad=True)
+        print(f"Adaptation rank: {self.rank}")
+
+    @property
+    def rank(self):
+        if self.weight_V is None:
+            return 0
+        return self.weight_V.shape[1]
+
+    @property
+    def delta_W(self):
+        if self.weight_V is None:
+            return torch.zeros_like(self.old_linear.weight)
+        return self.weight_U @ self.weight_V.T
+
+    def reset_parameters(self):
+        if self.weight_U is not None:
+            nn.init.zeros_(self.weight_U)
+
+    def forward(self, input):
+        return F.linear(input, self.old_linear.weight + self.delta_W, self.old_linear.bias)
+
+
+class Conv2dAdapt(nn.Module):
+    def __init__(self, old_conv: nn.Conv2d, cross_inputs: torch.Tensor, eps_rel_tol: float = 1e-2):
+        super(Conv2dAdapt, self).__init__()
+        self.old_conv = old_conv
+        # old conv weight is not trainable
+        self.old_conv.weight.requires_grad = False
+        if self.old_conv.bias is not None:
+            self.old_conv.bias.requires_grad = False
+        self.device = self.old_conv.weight.device
+        # get U and V matrices from cross inputs
+        self._get_UV(cross_inputs, eps_rel_tol)
+
+    def _get_UV(self, inputs: torch.Tensor, eps_rel_tol: float):
+        S_X_squared, V_X = torch.linalg.eigh(inputs)
+        S_X_squared.clamp(min=0.0)  # in-place clamping since matrix is psd
+        V_Xt = V_X.T
+        S_X = torch.sqrt(S_X_squared)
+        print(f"Singular values: {S_X}")
+
+        eps_tol = eps_rel_tol * S_X.sum()
+        print(f"{S_X.sum() = }")
+        print(f"{eps_rel_tol = } - {eps_tol = }")
+        zero_rank = torch.sum(S_X <= eps_tol).item()
+        # DEBUG: test truncated
+        # zero_rank = 10
+
+        if zero_rank == 0:
+            self.weight_U = None
+            self.weight_V = None
+        else:
+            # print(f"V_Xt before truncate = {V_Xt} - shape = {V_Xt.shape}")
+            V_Xt = V_Xt[:zero_rank, :]
+            # print(f"V_Xt after truncate = {V_Xt} - shape = {V_Xt.shape}")
+            # not trainable parameter
+            self.weight_V = nn.Parameter(V_Xt.T, requires_grad=False)
+            # trainable parameter initialized to zero
+            self.weight_U = nn.Parameter(torch.zeros(
+                self.old_conv.out_channels, zero_rank).to(self.device),
+                                         requires_grad=True)
+        print(f"Adaptation rank: {self.rank}")
+
+    @property
+    def rank(self):
+        if self.weight_V is None:
+            return 0
+        return self.weight_V.shape[1]
+
+    @property
+    def delta_W(self):
+        if self.weight_V is None:
+            return torch.zeros_like(self.old_conv.weight)
+        return self.weight_U @ self.weight_V.T
+
+    def reset_parameters(self):
+        if self.weight_U is not None:
+            nn.init.zeros_(self.weight_U)
+
+    def forward(self, input):
+        delta_W_reshaped = self.delta_W.view_as(self.old_conv.weight)
+        return F.conv2d(input, self.old_conv.weight + delta_W_reshaped,
+                        self.old_conv.bias, stride=self.old_conv.stride,
+                        padding=self.old_conv.padding,
+                        dilation=self.old_conv.dilation,
+                        groups=self.old_conv.groups)
+
+# END DEBUG
+
+# DEBUG: train_task_i
+def train_task_i(args, model, device, x, y, optimizer, criterion, task_id):
+    """
+    Training function for tasks after the first task.
+    Only trains the U parameters in adapted layers.
+    """
+    model.train()
+    r = np.arange(x.size(0))
+    np.random.shuffle(r)
+    r = torch.LongTensor(r)
+    
+    # Loop batches
+    for i in range(0, len(r), args.batch_size_train):
+        if i + args.batch_size_train <= len(r): 
+            b = r[i:i+args.batch_size_train]
+        else: 
+            b = r[i:]
+        
+        data = x[b].to(device)
+        target = y[b].to(device)
+        
+        # Use optimizer.optimizer to access the base optimizer
+        optimizer.optimizer.zero_grad()
+        output = model(data)[task_id]
+        loss = criterion(output, target)
+        loss.backward()
+        optimizer.step()  # SAM's step() already calls zero_grad() internally
+# END
+
+
+def main(args):
+    tstart=time.time()
+    ## Device Setting 
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+
+    ## Load CIFAR100 DATASET
+    from dataloader import cifar100 as cf100
+    data,taskcla,inputsize=cf100.get(seed=args.seed, pc_valid=args.pc_valid)
+
+    acc_matrix=np.zeros((10,10))
+    criterion = torch.nn.CrossEntropyLoss()
+
+    task_id = 0
+    task_list = []
+
+    all_previous_x = []  # Will store [X_1, X_2, ..., X_{t-1}]
+    all_previous_y = []
+    for k,ncla in taskcla:
+        threshold = np.array([args.gpm_thro] * 5)
+
+        log.info('*'*100)
+        # log.info('Task {:2d} ({:s})'.format(k,data[k]['name']))
+        log.info(f'Task {k:2d} ({data[k]["name"]:s})')
+        log.info('*'*100)
+        xtrain=data[k]['train']['x']
+        ytrain=data[k]['train']['y']
+        xvalid=data[k]['valid']['x']
+        yvalid=data[k]['valid']['y']
+        xtest =data[k]['test']['x']
+        ytest =data[k]['test']['y']
+        task_list.append(k)
+
+        lr = args.lr 
+        best_loss=np.inf
+        log.info ('-'*40)
+        # log.info ('Task ID :{} | Learning Rate : {}'.format(task_id, lr))
+        log.info (f'Task ID :{task_id} | Learning Rate : {lr}')
+        log.info ('-'*40)
+        
+        # Remove the "if task_id==0:" condition and the entire "else" block
+        # Just keep this for all tasks:
+
+        lr = args.lr 
+        best_loss=np.inf
+        log.info ('-'*40)
+        log.info (f'Task ID :{task_id} | Learning Rate : {lr}')
+        log.info ('-'*40)
+
+        if task_id==0:
+            model = AlexNet(taskcla).to(device)
+            log.info ('Model parameters ---')
+            for k_t, (m, param) in enumerate(model.named_parameters()):
+                log.info(f"{k_t}, {m}, {param.shape}")
+            log.info ('-'*40)
+
+        best_model=get_model(model)
+        base_optimizer = optim.SGD(model.parameters(), lr=lr)
+        optimizer = SAM(base_optimizer, model)
+
+        for epoch in range(1, args.n_epochs+1):
+            # Train
+            clock0=time.time()
+            train(args, model, device, xtrain, ytrain, optimizer, criterion, k)
+            clock1=time.time()
+            tr_loss,tr_acc = test(args, model, device, xtrain, ytrain, criterion, k)
+            log.info(f'Epoch {epoch:3d} | Train: loss={tr_loss:.3f}, acc={tr_acc:5.1f}% | time={1000*(clock1-clock0):5.1f}ms |')
+            
+            # Validate
+            valid_loss,valid_acc = test(args, model, device, xvalid, yvalid, criterion, k)
+            log.info(f' Valid: loss={valid_loss:.3f}, acc={valid_acc:5.1f}% |')
+            
+            # Adapt lr
+            if valid_loss<best_loss:
+                best_loss=valid_loss
+                best_model=get_model(model)
+                patience=args.lr_patience
+            else:
+                patience-=1
+                if patience<=0:
+                    lr/=args.lr_factor
+                    log.info(f'lr={lr:.1e}')
+                    if lr<args.lr_min:
+                        break
+                    patience=args.lr_patience
+                    adjust_learning_rate(optimizer.optimizer, epoch, args)
+            log.info('')
+
+        set_model_(model,best_model)
+
+        # Test
+        log.info ('-'*40)
+        test_loss, test_acc = test(args, model, device, xtest, ytest, criterion, k)
+        log.info(f'Test: loss={test_loss:.3f} , acc={test_acc:5.1f}%')
+
+        # save accuracy
+        jj = 0 
+        for ii in np.array(task_list)[0:task_id+1]:
+            xtest =data[ii]['test']['x']
+            ytest =data[ii]['test']['y'] 
+            _, acc_matrix[task_id,jj] = test(args, model, device, xtest, ytest,criterion,ii) 
+            jj +=1
+        log.info('Accuracies =')
+        for i_a in range(task_id + 1):
+            # log.info('\t')
+            acc_ = ''
+            for j_a in range(acc_matrix.shape[1]):
+                # acc_ += '{:5.1f}% '.format(acc_matrix[i_a, j_a])
+                acc_ += f'{acc_matrix[i_a, j_a]:5.1f}% '
+            log.info(acc_)
+        # update task id 
+        task_id +=1
+    log.info('-'*50)
+    # Simulation Results 
+    # log.info ('Task Order : {}'.format(np.array(task_list)))
+    # log.info ('Final Avg Accuracy: {:5.2f}%'.format(acc_matrix[-1].mean()))
+    log.info (f'Task Order : {np.array(task_list)}')
+    log.info (f'Final Avg Accuracy: {acc_matrix[-1].mean():5.2f}%')
+    bwt=np.mean((acc_matrix[-1]-np.diag(acc_matrix))[:-1]) 
+    # log.info ('Backward transfer: {:5.2f}%'.format(bwt))
+    # log.info('[Elapsed time = {:.1f} ms]'.format((time.time()-tstart)*1000))
+    log.info (f'Backward transfer: {bwt:5.2f}%')
+    log.info(f'[Elapsed time = {(time.time()-tstart)*1000:.1f} ms]')
+    log.info('-'*50)
+    return acc_matrix[-1].mean(), bwt
+
+
+def create_log_dir(path, filename='log.txt'):
+    import logging
+    if not os.path.exists(path):
+        os.makedirs(path)
+    logger = logging.getLogger(path)
+    logger.setLevel(logging.DEBUG)
+    fh = logging.FileHandler(path+'/'+filename)
+    fh.setLevel(logging.DEBUG)
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.DEBUG)
+    logger.addHandler(fh)
+    logger.addHandler(ch)
+    return logger
+
+if __name__ == "__main__":
+    # Training parameters
+    parser = argparse.ArgumentParser(description='Sequential CIFAR100 with DFGP')
+    parser.add_argument('--batch_size_train', type=int, default=64, metavar='N',
+                        help='input batch size for training (default: 64)')
+    parser.add_argument('--batch_size_test', type=int, default=64, metavar='N',
+                        help='input batch size for testing (default: 64)')
+    parser.add_argument('--n_epochs', type=int, default=5, metavar='N',
+                        help='number of training epochs/task (default: 200)')
+    parser.add_argument('--seed', type=int, default=1, metavar='S',
+                        help='random seed (default: 1)')
+    parser.add_argument('--pc_valid',default=0.05,type=float,
+                        help='fraction of training data used for validation')
+    # Optimizer parameters
+    parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
+                        help='learning rate (default: 0.01)')
+    parser.add_argument('--momentum', type=float, default=0.9, metavar='M',
+                        help='SGD momentum (default: 0.9)')
+    parser.add_argument('--lr_min', type=float, default=1e-5, metavar='LRM',
+                        help='minimum lr rate (default: 1e-5)')
+    parser.add_argument('--lr_patience', type=int, default=6, metavar='LRP',
+                        help='hold before decaying lr (default: 6)')
+    parser.add_argument('--lr_factor', type=int, default=2, metavar='LRF',
+                        help='lr decay factor (default: 2)')
+    parser.add_argument('--savename', type=str, default='./logs/CIFAR100/',
+                        help='save path')
+    parser.add_argument('--gpm_thro', type=float, default=0.95, metavar='gradient projection',
+                        help='gpm_thro')
+    parser.add_argument('--mixup_alpha', type=float, default=20, metavar='Alpha',
+                        help='mixup_alpha')
+    parser.add_argument('--mixup_weight', type=float, default=0.1, metavar='Weight',
+                        help='mixup_weight')
+
+    parser.add_argument('--eps_1', type=float, default=0.01, metavar='Epsilon_1',
+                        help='epsilon_1 for SVD')
+
+    args = parser.parse_args()
+    str_time_ = time.strftime('%Y%m%d_%H%M%S', time.localtime(time.time()))
+    # log = create_log_dir(args.savename, 'log_{}.txt'.format(str_time_))
+    log = create_log_dir(args.savename, f'log_{str_time_}.txt')
+
+    # for mixup_weight in [0.01, 0.001, 0.0001]:
+    #     for thro_ in [0.94, 0.95, 0.96]:
+
+    for mixup_weight in [0.0001]:
+        for thro_ in [0.96]:
+
+            accs, bwts = [], []
+            args.mixup_weight = mixup_weight
+            args.thro = thro_
+
+            str_time = str_time_ + '_' + str(mixup_weight) +  '_' + str(thro_)
+
+            # for seed_ in [1, 2]:
+            for seed_ in [1]:
+                try:
+                    args.seed = seed_
+                    log.info('=' * 100)
+                    log.info('Arguments =')
+                    log.info(str(args))
+                    log.info('=' * 100)
+
+                    train_begin_time = time.time()
+                    acc, bwt = main(args)
+                    print(time.time() - train_begin_time)
+                    log.info(f"time cost = {str(time.time() - train_begin_time)}")
+
+                    accs.append(acc)
+                    bwts.append(bwt)
+                except Exception as e:
+                    log.error(f"seed {seed_} Error: {type(e).__name__}: {str(e)}")
+                    import traceback
+                    log.error(traceback.format_exc())
