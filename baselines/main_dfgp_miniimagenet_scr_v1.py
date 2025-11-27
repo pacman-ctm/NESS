@@ -241,131 +241,6 @@ def adjust_learning_rate(optimizer, epoch, args):
 
 
 # Debug 2: New train, train_projected using SAM
-# def train(args, model, device, x, y, optimizer, criterion, task_id):
-#     model.train()
-#     r = np.arange(x.size(0))
-#     np.random.shuffle(r)
-#     r = torch.LongTensor(r)
-    
-#     # Loop batches
-#     for i in range(0, len(r), args.batch_size_train):
-#         if i + args.batch_size_train <= len(r): 
-#             b = r[i:i + args.batch_size_train]
-#         else: 
-#             b = r[i:]
-        
-#         data = x[b].to(device)
-#         target = y[b].to(device)
-
-#         # Weight Ascent Step (SAM)
-#         output = model(data)[task_id]
-#         loss = criterion(output, target)
-#         loss.backward()
-#         optimizer.perturb_step()
-
-#         # Weight Descent Step (SAM)
-#         output = model(data)[task_id]
-#         loss = criterion(output, target)
-#         loss.backward()
-#         optimizer.unperturb_step()
-
-#         # Update
-#         optimizer.step()
-
-
-# def train_projected(args, model, device, x, y, optimizer, criterion, feature_mat, task_id):
-#     model.train()
-#     r = np.arange(x.size(0))
-#     np.random.shuffle(r)
-#     r = torch.LongTensor(r).to(device)
-    
-#     # Loop batches
-#     for i in range(0, len(r), args.batch_size_train):
-#         if i + args.batch_size_train <= len(r): 
-#             b = r[i:i + args.batch_size_train]
-#         else: 
-#             b = r[i:]
-        
-#         data = x[b].to(device)
-#         target = y[b].to(device)
-
-#         # Weight Ascent Step (SAM)
-#         output = model(data)[task_id]
-#         loss = criterion(output, target)
-#         loss.backward()
-#         optimizer.perturb_step()
-
-#         # Weight Descent Step (SAM)
-#         output = model(data)[task_id]
-#         loss = criterion(output, target)
-#         loss.backward()
-#         optimizer.unperturb_step()
-
-#         # Gradient Projections 
-#         kk = 0 
-#         for k, (m, params) in enumerate(model.named_parameters()):
-#             if k < 15 and len(params.size()) != 1:
-#                 sz = params.grad.data.size(0)
-#                 params.grad.data = params.grad.data - torch.mm(params.grad.data.view(sz, -1), feature_mat[kk]).view(params.size())
-#                 kk += 1
-#             elif (k < 15 and len(params.size()) == 1) and task_id != 0:
-#                 params.grad.data.fill_(0)
-
-#         optimizer.step()
-
-# def update_GradientMemory (model, mat_list, threshold, feature_list=[],):
-#     # log.info ('Threshold: ', threshold)
-#     log.info(f"Threshold: {threshold}")
-#     if not feature_list:
-#         # After First Task 
-#         for i in range(len(mat_list)):
-#             activation = mat_list[i]
-#             U,S,Vh = np.linalg.svd(activation, full_matrices=False)
-#             sval_total = (S**2).sum()
-#             sval_ratio = (S**2)/sval_total
-#             r = np.sum(np.cumsum(sval_ratio)<threshold[i]) #+1  
-#             feature_list.append(U[:,0:r])
-#     else:
-#         for i in range(len(mat_list)):
-#             activation = mat_list[i]
-#             U1,S1,Vh1=np.linalg.svd(activation, full_matrices=False)
-#             sval_total = (S1**2).sum()
-#             act_hat = activation - np.dot(np.dot(feature_list[i],feature_list[i].transpose()),activation)
-#             U,S,Vh = np.linalg.svd(act_hat, full_matrices=False)
-#             sval_hat = (S**2).sum()
-#             sval_ratio = (S**2)/sval_total               
-#             accumulated_sval = (sval_total-sval_hat)/sval_total
-            
-#             r = 0
-#             for ii in range (sval_ratio.shape[0]):
-#                 if accumulated_sval < threshold[i]:
-#                     accumulated_sval += sval_ratio[ii]
-#                     r += 1
-#                 else:
-#                     break
-#             if r == 0:
-#                 # log.info ('Skip Updating GPM for layer: {}'.format(i+1))
-#                 log.info (f'Skip Updating GPM for layer: {i+1}')
-#                 continue
-#             Ui=np.hstack((feature_list[i],U[:,0:r]))
-#             if Ui.shape[1] > Ui.shape[0] :
-#                 feature_list[i]=Ui[:,0:Ui.shape[0]]
-#             else:
-#                 feature_list[i]=Ui
-    
-#     log.info('-'*40)
-#     log.info('Gradient Constraints Summary')
-#     log.info('-'*40)
-#     for i in range(len(feature_list)):
-#         # log.info ('Layer {} : {}/{}'.format(i+1,feature_list[i].shape[1], feature_list[i].shape[0]))
-#         log.info (f'Layer {i+1} : {feature_list[i].shape[1]}/{feature_list[i].shape[0]}')
-#     log.info('-'*40)
-#     return feature_list  
-
-# End Debug 2: 
-
-# Debug 3: New train, train_projected using SGD.
-
 def train(args, model, device, x, y, optimizer, criterion, task_id):
     model.train()
     r = np.arange(x.size(0))
@@ -382,12 +257,21 @@ def train(args, model, device, x, y, optimizer, criterion, task_id):
         data = x[b].to(device)
         target = y[b].to(device)
 
-        # Standard SGD training
-        optimizer.zero_grad()
+        # Weight Ascent Step (SAM)
         output = model(data)[task_id]
         loss = criterion(output, target)
         loss.backward()
+        optimizer.perturb_step()
+
+        # Weight Descent Step (SAM)
+        output = model(data)[task_id]
+        loss = criterion(output, target)
+        loss.backward()
+        optimizer.unperturb_step()
+
+        # Update
         optimizer.step()
+
 
 def train_projected(args, model, device, x, y, optimizer, criterion, feature_mat, task_id):
     model.train()
@@ -405,78 +289,194 @@ def train_projected(args, model, device, x, y, optimizer, criterion, feature_mat
         data = x[b].to(device)
         target = y[b].to(device)
 
-        # Standard SGD training
-        optimizer.zero_grad()
+        # Weight Ascent Step (SAM)
         output = model(data)[task_id]
         loss = criterion(output, target)
         loss.backward()
+        optimizer.perturb_step()
+
+        # Weight Descent Step (SAM)
+        output = model(data)[task_id]
+        loss = criterion(output, target)
+        loss.backward()
+        optimizer.unperturb_step()
 
         # Gradient Projections 
         kk = 0 
-        for k, (m, params) in enumerate(model.named_parameters()):
-            if k < 15 and len(params.size()) != 1:
-                sz = params.grad.data.size(0)
-                params.grad.data = params.grad.data - torch.mm(params.grad.data.view(sz, -1), feature_mat[kk]).view(params.size())
-                kk += 1
-            elif (k < 15 and len(params.size()) == 1) and task_id != 0:
+        for k, (m,params) in enumerate(model.named_parameters()):
+            if len(params.size())==4 and 'weight' in m:
+                sz =  params.grad.data.size(0)
+                params.grad.data = params.grad.data - torch.mm(params.grad.data.view(sz,-1), feature_mat[kk]).view(params.size())
+                kk+=1
+            elif len(params.size())==1 and task_id !=0:
                 params.grad.data.fill_(0)
 
         optimizer.step()
 
-def update_GradientMemory(model, mat_list, threshold, feature_list=[]):
+def update_GradientMemory (model, mat_list, threshold, feature_list=[],):
+    # log.info ('Threshold: ', threshold)
     log.info(f"Threshold: {threshold}")
     if not feature_list:
         # After First Task 
         for i in range(len(mat_list)):
             activation = mat_list[i]
-            U, S, Vh = np.linalg.svd(activation, full_matrices=False)
+            U,S,Vh = np.linalg.svd(activation, full_matrices=False)
             sval_total = (S**2).sum()
             sval_ratio = (S**2)/sval_total
-            r = np.sum(np.cumsum(sval_ratio) < threshold[i])
-            feature_list.append(U[:, 0:r])
+            r = np.sum(np.cumsum(sval_ratio)<threshold[i]) #+1  
+            feature_list.append(U[:,0:r])
     else:
         for i in range(len(mat_list)):
             activation = mat_list[i]
-            U1, S1, Vh1 = np.linalg.svd(activation, full_matrices=False)
+            U1,S1,Vh1=np.linalg.svd(activation, full_matrices=False)
             sval_total = (S1**2).sum()
-            act_hat = activation - np.dot(np.dot(feature_list[i], feature_list[i].transpose()), activation)
-            
-            # Try SVD with error handling
-            try:
-                U, S, Vh = np.linalg.svd(act_hat, full_matrices=False)
-            except np.linalg.LinAlgError:
-                log.info(f'SVD did not converge for layer {i+1}, skipping update')
-                continue
-            
+            act_hat = activation - np.dot(np.dot(feature_list[i],feature_list[i].transpose()),activation)
+            U,S,Vh = np.linalg.svd(act_hat, full_matrices=False)
             sval_hat = (S**2).sum()
             sval_ratio = (S**2)/sval_total               
-            accumulated_sval = (sval_total - sval_hat)/sval_total
+            accumulated_sval = (sval_total-sval_hat)/sval_total
             
             r = 0
-            for ii in range(sval_ratio.shape[0]):
+            for ii in range (sval_ratio.shape[0]):
                 if accumulated_sval < threshold[i]:
                     accumulated_sval += sval_ratio[ii]
                     r += 1
                 else:
                     break
-            
             if r == 0:
-                log.info(f'Skip Updating GPM for layer: {i+1}')
+                # log.info ('Skip Updating GPM for layer: {}'.format(i+1))
+                log.info (f'Skip Updating GPM for layer: {i+1}')
                 continue
-            
-            Ui = np.hstack((feature_list[i], U[:, 0:r]))
-            if Ui.shape[1] > Ui.shape[0]:
-                feature_list[i] = Ui[:, 0:Ui.shape[0]]
+            Ui=np.hstack((feature_list[i],U[:,0:r]))
+            if Ui.shape[1] > Ui.shape[0] :
+                feature_list[i]=Ui[:,0:Ui.shape[0]]
             else:
-                feature_list[i] = Ui
+                feature_list[i]=Ui
     
     log.info('-'*40)
     log.info('Gradient Constraints Summary')
     log.info('-'*40)
     for i in range(len(feature_list)):
-        log.info(f'Layer {i+1} : {feature_list[i].shape[1]}/{feature_list[i].shape[0]}')
+        # log.info ('Layer {} : {}/{}'.format(i+1,feature_list[i].shape[1], feature_list[i].shape[0]))
+        log.info (f'Layer {i+1} : {feature_list[i].shape[1]}/{feature_list[i].shape[0]}')
     log.info('-'*40)
-    return feature_list
+    return feature_list  
+
+# End Debug 2: 
+
+# Debug 3: New train, train_projected using SGD.
+
+# def train(args, model, device, x, y, optimizer, criterion, task_id):
+#     model.train()
+#     r = np.arange(x.size(0))
+#     np.random.shuffle(r)
+#     r = torch.LongTensor(r)
+    
+#     # Loop batches
+#     for i in range(0, len(r), args.batch_size_train):
+#         if i + args.batch_size_train <= len(r): 
+#             b = r[i:i + args.batch_size_train]
+#         else: 
+#             b = r[i:]
+        
+#         data = x[b].to(device)
+#         target = y[b].to(device)
+
+#         # Standard SGD training
+#         optimizer.zero_grad()
+#         output = model(data)[task_id]
+#         loss = criterion(output, target)
+#         loss.backward()
+#         optimizer.step()
+
+# def train_projected(args, model, device, x, y, optimizer, criterion, feature_mat, task_id):
+#     model.train()
+#     r = np.arange(x.size(0))
+#     np.random.shuffle(r)
+#     r = torch.LongTensor(r).to(device)
+    
+#     # Loop batches
+#     for i in range(0, len(r), args.batch_size_train):
+#         if i + args.batch_size_train <= len(r): 
+#             b = r[i:i + args.batch_size_train]
+#         else: 
+#             b = r[i:]
+        
+#         data = x[b].to(device)
+#         target = y[b].to(device)
+
+#         # Standard SGD training
+#         optimizer.zero_grad()
+#         output = model(data)[task_id]
+#         loss = criterion(output, target)
+#         loss.backward()
+
+#         # Gradient Projections 
+#         kk = 0 
+#         for k, (m,params) in enumerate(model.named_parameters()):
+#             if len(params.size())==4 and 'weight' in m:
+#                 sz =  params.grad.data.size(0)
+#                 params.grad.data = params.grad.data - torch.mm(params.grad.data.view(sz,-1), feature_mat[kk]).view(params.size())
+#                 kk+=1
+#             elif len(params.size())==1 and task_id !=0:
+#                 params.grad.data.fill_(0)
+
+#         optimizer.step()
+
+# def update_GradientMemory(model, mat_list, threshold, feature_list=[]):
+#     log.info(f"Threshold: {threshold}")
+#     if not feature_list:
+#         # After First Task 
+#         for i in range(len(mat_list)):
+#             activation = mat_list[i]
+#             U, S, Vh = np.linalg.svd(activation, full_matrices=False)
+#             sval_total = (S**2).sum()
+#             sval_ratio = (S**2)/sval_total
+#             r = np.sum(np.cumsum(sval_ratio) < threshold[i])
+#             feature_list.append(U[:, 0:r])
+#     else:
+#         for i in range(len(mat_list)):
+#             activation = mat_list[i]
+#             U1, S1, Vh1 = np.linalg.svd(activation, full_matrices=False)
+#             sval_total = (S1**2).sum()
+#             act_hat = activation - np.dot(np.dot(feature_list[i], feature_list[i].transpose()), activation)
+            
+#             # Try SVD with error handling
+#             try:
+#                 U, S, Vh = np.linalg.svd(act_hat, full_matrices=False)
+#             except np.linalg.LinAlgError:
+#                 log.info(f'SVD did not converge for layer {i+1}, skipping update')
+#                 continue
+            
+#             sval_hat = (S**2).sum()
+#             sval_ratio = (S**2)/sval_total               
+#             accumulated_sval = (sval_total - sval_hat)/sval_total
+            
+#             r = 0
+#             for ii in range(sval_ratio.shape[0]):
+#                 if accumulated_sval < threshold[i]:
+#                     accumulated_sval += sval_ratio[ii]
+#                     r += 1
+#                 else:
+#                     break
+            
+#             if r == 0:
+#                 log.info(f'Skip Updating GPM for layer: {i+1}')
+#                 continue
+            
+#             Ui = np.hstack((feature_list[i], U[:, 0:r]))
+#             if Ui.shape[1] > Ui.shape[0]:
+#                 feature_list[i] = Ui[:, 0:Ui.shape[0]]
+#             else:
+#                 feature_list[i] = Ui
+    
+#     log.info('-'*40)
+#     log.info('Gradient Constraints Summary')
+#     log.info('-'*40)
+#     for i in range(len(feature_list)):
+#         log.info(f'Layer {i+1} : {feature_list[i].shape[1]}/{feature_list[i].shape[0]}')
+#     log.info('-'*40)
+#     return feature_list
 
 # End Debug 3
 
@@ -644,10 +644,10 @@ def main(args):
             best_model=get_model(model)
             feature_list =[]
             base_optimizer = optim.SGD(model.parameters(), lr=lr)
-            # optimizer = SAM(base_optimizer, model)
+            optimizer = SAM(base_optimizer, model)
 
             # Debug 3: Using SGD optimizer
-            optimizer = base_optimizer
+            # optimizer = base_optimizer
 
             for epoch in range(1, args.n_epochs+1):
                 # Train
@@ -676,9 +676,9 @@ def main(args):
                         if lr<args.lr_min:
                             break
                         patience=args.lr_patience
-                        # adjust_learning_rate(optimizer.optimizer, epoch, args)
+                        adjust_learning_rate(optimizer.optimizer, epoch, args)
                         # Debug 3: Using SGD optimizer
-                        adjust_learning_rate(optimizer, epoch, args)
+                        # adjust_learning_rate(optimizer, epoch, args)
             set_model_(model,best_model)
             # Test
             log.info ('-'*40)
@@ -690,10 +690,10 @@ def main(args):
             feature_list = update_GradientMemory (model, mat_list, threshold, feature_list)
         else:
             base_optimizer = optim.SGD(model.parameters(), lr=lr)
-            # optimizer = SAM(base_optimizer, model)
+            optimizer = SAM(base_optimizer, model)
 
             # Debug 3: Using SGD optimizer
-            optimizer = base_optimizer
+            # optimizer = base_optimizer
 
             feature_mat = []
             # Projection Matrix Precomputation
@@ -730,9 +730,9 @@ def main(args):
                         if lr<args.lr_min:
                             break
                         patience=args.lr_patience
-                        # adjust_learning_rate(optimizer.optimizer, epoch, args)
+                        adjust_learning_rate(optimizer.optimizer, epoch, args)
                         # Debug 3: Using SGD optimizer
-                        adjust_learning_rate(optimizer, epoch, args)
+                        # adjust_learning_rate(optimizer, epoch, args)
             set_model_(model,best_model)
             # Test 
             test_loss, test_acc = test(args, model, device, xtest, ytest,  criterion,k)
@@ -810,10 +810,10 @@ if __name__ == "__main__":
                         help='hold before decaying lr (default: 6)')
     parser.add_argument('--lr_factor', type=int, default=3, metavar='LRF',
                         help='lr decay factor (default: 2)')
-    # parser.add_argument('--savename', type=str, default='./logs/MINI/',
-    #                     help='save path')
-    parser.add_argument('--savename', type=str, default='/mnt/lab-storage/cuong/2509-OCL/test-dfgp/logs/MINI/',
+    parser.add_argument('--savename', type=str, default='./logs/MINI/',
                         help='save path')
+    # parser.add_argument('--savename', type=str, default='/mnt/lab-storage/cuong/2509-OCL/test-dfgp/logs/MINI/',
+    #                     help='save path')
     parser.add_argument('--gpm_thro', type=float, default=0.97, metavar='gradient projection',
                         help='gpm_thro')
     parser.add_argument('--mixup_alpha', type=float, default=20, metavar='Alpha',

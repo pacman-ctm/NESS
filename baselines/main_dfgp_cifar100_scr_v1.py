@@ -716,11 +716,11 @@ if __name__ == "__main__":
                         help='hold before decaying lr (default: 6)')
     parser.add_argument('--lr_factor', type=int, default=2, metavar='LRF',
                         help='lr decay factor (default: 2)')
-    # parser.add_argument('--savename', type=str, default='./logs/CIFAR100/',
-    #                     help='save path')
-
-    parser.add_argument('--savename', type=str, default='/mnt/lab-storage/cuong/2509-OCL/test-dfgp/logs/CIFAR100/',
+    parser.add_argument('--savename', type=str, default='./logs/CIFAR100/',
                         help='save path')
+
+    # parser.add_argument('--savename', type=str, default='/mnt/lab-storage/cuong/2509-OCL/test-dfgp/logs/CIFAR100/',
+    #                     help='save path')
     parser.add_argument('--gpm_thro', type=float, default=0.95, metavar='gradient projection',
                         help='gpm_thro')
     parser.add_argument('--mixup_alpha', type=float, default=20, metavar='Alpha',
@@ -732,6 +732,7 @@ if __name__ == "__main__":
     str_time_ = time.strftime('%Y%m%d_%H%M%S', time.localtime(time.time()))
     # log = create_log_dir(args.savename, 'log_{}.txt'.format(str_time_))
     log = create_log_dir(args.savename, f'log_dfgp_scr_{str_time_}.log')
+    
 
     for mixup_weight in [0]:
         for thro_ in [0.94, 0.95, 0.96]:

@@ -1,14 +1,23 @@
 # OrthoCL
 
+## To-do list:
+- [ ] Find the way to add TRGP and FS-DGPM baselines to this repository.
+- [ ] Add our method with SGD, SAM, and (optional) SGD with momentum, Adam.
+- [ ] Clean code.
+
+
+
 ## Usage
 
-For environment:
+For **baselines** code: The code can work if you move that to the OrthoCL/ instead of OrthoCL/baselines, I haven't fixed the dataset path for them.
+
+For **environment**:
 * The code only use **torch** and **torchvision**.
 
-For datasets:
+For **datasets**:
 * With CIFAR-100, the dataset is automatically installed during the training process.
 
-For experiments with CIFAR-100:
+For **experiments with CIFAR-100** (WARNING: the code is not correct anymore)
 * Train the continual learning from scratch (to see the maximum accuracy on every tasks and do not care about the forgetting):
 ```
 python main_our_cifar_100_scratch.py

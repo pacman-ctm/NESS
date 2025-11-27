@@ -532,7 +532,7 @@ def main(args):
     return acc_matrix[-1].mean(), bwt
 
 
-def create_log_dir(path, filename='log.txt'):
+def create_log_dir(path, filename='log.log'):
     import logging
     if not os.path.exists(path):
         os.makedirs(path)
@@ -582,13 +582,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
     str_time_ = time.strftime('%Y%m%d_%H%M%S', time.localtime(time.time()))
     # log = create_log_dir(args.savename, 'log_{}.txt'.format(str_time_))
-    log = create_log_dir(args.savename, f'log_{str_time_}.txt')
+    log = create_log_dir(args.savename, f'log_{str_time_}.log')
 
     for mixup_weight in [0.01, 0.001, 0.0001]:
-        for thro_ in [0.94, 0.95, 0.96]:
+        # for thro_ in [0.94, 0.95, 0.96]:
 
     # for mixup_weight in [0.0001]:
-    #     for thro_ in [0.96]:
+        for thro_ in [0.96]:
 
             accs, bwts = [], []
             args.mixup_weight = mixup_weight

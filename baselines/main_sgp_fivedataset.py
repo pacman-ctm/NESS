@@ -4,14 +4,22 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.functional import relu, avg_pool2d
 from torch.autograd import Variable
+
+import torchvision
+from torchvision import datasets, transforms
+
 import os
 import os.path
 from collections import OrderedDict
+
+import matplotlib.pyplot as plt
 import numpy as np
+
+import random
+import pdb
 import argparse,time
+import math
 from copy import deepcopy
-import time
-from flatness_minima import SAM
 
 ## Define ResNet18 model
 def compute_conv_output_size(Lin,kernel_size,stride=1,padding=0,dilation=1):
@@ -100,7 +108,6 @@ class ResNet(nn.Module):
 
 def ResNet18(taskcla, nf=32):
     return ResNet(BasicBlock, [2, 2, 2, 2], taskcla, nf)
-
 def get_model(model):
     return deepcopy(model.state_dict())
 
@@ -115,140 +122,47 @@ def adjust_learning_rate(optimizer, epoch, args):
         else:
             param_group['lr'] /= args.lr_factor  
 
-def beta_distributions(size, alpha=1):
-    return np.random.beta(alpha, alpha, size=size)
-
-class AugModule(nn.Module):
-    def __init__(self):
-        super(AugModule, self).__init__()
-
-    def forward(self, xs, lam, y, index):
-        x_ori = xs
-        N = x_ori.size()[0]
-        x_ori_perm = x_ori[index, :]
-        lam = lam.view((N, 1, 1, 1)).expand_as(x_ori)
-        x_mix = (1 - lam) * x_ori + lam * x_ori_perm
-        y_a, y_b = y, y[index]
-        return x_mix, y_a, y_b
-
-def mixup_criterion(criterion, pred, y_a, y_b, lam):
-    loss_a = lam * criterion(pred, y_a)
-    loss_b = (1 - lam) * criterion(pred, y_b)
-    return loss_a.mean() + loss_b.mean()
-
 def train(args, model, device, x,y, optimizer,criterion, task_id):
     model.train()
     r=np.arange(x.size(0))
     np.random.shuffle(r)
     r=torch.LongTensor(r).to(device)
-    # r = torch.LongTensor(r) # DEBUG
-    aug_model = AugModule()
     # Loop batches
     for i in range(0,len(r),args.batch_size_train):
         if i+args.batch_size_train<=len(r): b=r[i:i+args.batch_size_train]
         else: b=r[i:]
         data = x[b]
         data, target = data.to(device), y[b].to(device)
-        raw_data, raw_target = data.to(device), y[b].to(device)
-
-        # Data Perturbation Step
-        # initialize lamb mix:
-        N = data.shape[0]
-        lam = (beta_distributions(size=N, alpha=args.mixup_alpha)).astype(np.float32)
-        lam_adv = Variable(torch.from_numpy(lam)).to(device)
-        lam_adv = torch.clamp(lam_adv, 0, 1)  # clamp to range [0,1)
-        lam_adv.requires_grad = True
-
-        # index = torch.randperm(N).cuda()
-        index = torch.randperm(N).to(device) # DEBUG
-        # initialize x_mix
-        mix_inputs, mix_targets_a, mix_targets_b = aug_model(raw_data, lam_adv, raw_target, index)
-
-        # Weight and Data Ascent Step
-        output1 = model(raw_data)[task_id]
-        output2 = model(mix_inputs)[task_id]
-        loss = criterion(output1, raw_target) + args.mixup_weight * mixup_criterion(criterion, output2, mix_targets_a, mix_targets_b, lam_adv.detach())
+        optimizer.zero_grad()        
+        output = model(data)
+        loss = criterion(output[task_id], target)        
         loss.backward()
-        grad_lam_adv = lam_adv.grad.data
-        grad_norm = torch.norm(grad_lam_adv, p=2) + 1.e-16
-        lam_adv.data.add_(grad_lam_adv * 0.05 / grad_norm)  # gradient assend by SAM
-        lam_adv = torch.clamp(lam_adv, 0, 1)
-        optimizer.perturb_step()
-
-        # Weight Descent Step
-        mix_inputs, mix_targets_a, mix_targets_b = aug_model(raw_data, lam_adv, raw_target, index)
-        mix_inputs = mix_inputs.detach()
-        lam_adv = lam_adv.detach()
-
-        output1 = model(raw_data)[task_id]
-        output2 = model(mix_inputs)[task_id]
-        loss = criterion(output1, raw_target) + args.mixup_weight * mixup_criterion(criterion, output2, mix_targets_a, mix_targets_b, lam_adv.detach())
-        loss.backward()
-        optimizer.unperturb_step()
-
-        # Update
         optimizer.step()
-
-
 
 def train_projected(args,model,device,x,y,optimizer,criterion,feature_mat,task_id):
     model.train()
     r=np.arange(x.size(0))
     np.random.shuffle(r)
     r=torch.LongTensor(r).to(device)
-    # r = torch.LongTensor(r) # DEBUG
-    aug_model = AugModule()
     # Loop batches
     for i in range(0,len(r),args.batch_size_train):
         if i+args.batch_size_train<=len(r): b=r[i:i+args.batch_size_train]
         else: b=r[i:]
         data = x[b]
-        raw_data, raw_target = data.to(device), y[b].to(device)
-
-        # Data Perturbation Step
-        # initialize lamb mix:
-        N = data.shape[0]
-        lam = (beta_distributions(size=N, alpha=args.mixup_alpha)).astype(np.float32)
-        lam_adv = Variable(torch.from_numpy(lam)).to(device)
-        lam_adv = torch.clamp(lam_adv, 0, 1)  # clamp to range [0,1)
-        lam_adv.requires_grad = True
-
-        # index = torch.randperm(N).cuda()
-        index = torch.randperm(N).to(device) # DEBUG
-        # initialize x_mix
-        mix_inputs, mix_targets_a, mix_targets_b = aug_model(raw_data, lam_adv, raw_target, index)
-
-        # Weight and Data Ascent Step
-        output1 = model(raw_data)[task_id]
-        output2 = model(mix_inputs)[task_id]
-        loss = criterion(output1, raw_target) + args.mixup_weight * mixup_criterion(criterion, output2, mix_targets_a, mix_targets_b, lam_adv.detach())
+        data, target = data.to(device), y[b].to(device)
+        optimizer.zero_grad()        
+        output = model(data)
+        loss = criterion(output[task_id], target)         
         loss.backward()
-        grad_lam_adv = lam_adv.grad.data
-        grad_norm = torch.norm(grad_lam_adv, p=2) + 1.e-16
-        lam_adv.data.add_(grad_lam_adv * 0.05 / grad_norm)  # gradient assend by SAM
-        lam_adv = torch.clamp(lam_adv, 0, 1)
-        optimizer.perturb_step()
-
-        # Weight Descent Step
-        mix_inputs, mix_targets_a, mix_targets_b = aug_model(raw_data, lam_adv, raw_target, index)
-        mix_inputs = mix_inputs.detach()
-        lam_adv = lam_adv.detach()
-
-        output1 = model(raw_data)[task_id]
-        output2 = model(mix_inputs)[task_id]
-        loss = criterion(output1, raw_target) + args.mixup_weight * mixup_criterion(criterion, output2, mix_targets_a, mix_targets_b, lam_adv.detach())
-        loss.backward()
-        optimizer.unperturb_step()
-
-        # Gradient Projections
+        # Gradient Projections 
         kk = 0 
         for k, (m,params) in enumerate(model.named_parameters()):
-            if len(params.size())==4:
-                sz =  params.grad.data.size(0)
+            if len(params.size()) == 4:
+                sz = params.grad.data.size(0)
                 params.grad.data = params.grad.data - torch.mm(params.grad.data.view(sz,-1),\
-                                                    feature_mat[kk]).view(params.size())
-                kk+=1
-            elif len(params.size())==1 and task_id !=0:
+                                                        feature_mat[kk]).view(params.size())
+                kk += 1
+            elif len(params.size()) == 1 and task_id != 0:
                 params.grad.data.fill_(0)
 
         optimizer.step()
@@ -261,7 +175,6 @@ def test(args, model, device, x, y, criterion, task_id):
     r=np.arange(x.size(0))
     np.random.shuffle(r)
     r=torch.LongTensor(r).to(device)
-    # r = torch.LongTensor(r) # DEBUG
     with torch.no_grad():
         # Loop batches
         for i in range(0,len(r),args.batch_size_test):
@@ -287,7 +200,6 @@ def get_representation_matrix_ResNet18 (net, device, x, y=None):
     r=np.arange(x.size(0))
     np.random.shuffle(r)
     r=torch.LongTensor(r).to(device)
-    # r = torch.LongTensor(r) # DEBUG
     b=r[0:100] # ns=100 examples 
     example_data = x[b]
     example_data = example_data.to(device)
@@ -349,35 +261,47 @@ def get_representation_matrix_ResNet18 (net, device, x, y=None):
             mat_final.append(mat_sc_list[ik])
             ik+=1
 
-    log.info('-'*30)
-    log.info('Representation Matrix')
-    log.info('-'*30)
+    print('-'*30)
+    print('Representation Matrix')
+    print('-'*30)
     for i in range(len(mat_final)):
-        # log.info ('Layer {} : {}'.format(i+1,mat_final[i].shape))
-        log.info(f"Layer {i+1} : {mat_final[i].shape}")
-    log.info('-'*30)
-    return mat_final    
+        print(f"Layer {i+1} : {mat_final[i].shape}")
+    print('-'*30)
+    return mat_final
 
 
-def update_GradientMemory (model, mat_list, threshold, feature_list=[],):
-    # log.info ('Threshold: ', threshold)
-    log.info(f"Threshold: {threshold}")
+def update_SGP (args, model, mat_list, threshold, task_id, feature_list=[], importance_list=[]):
+    plt.figure(figsize=(10, 6))
+    print ('Threshold: ', threshold) 
     if not feature_list:
         # After First Task 
         for i in range(len(mat_list)):
             activation = mat_list[i]
             U,S,Vh = np.linalg.svd(activation, full_matrices=False)
+            # criteria (Eq-1)
             sval_total = (S**2).sum()
             sval_ratio = (S**2)/sval_total
             r = np.sum(np.cumsum(sval_ratio)<threshold[i]) #+1  
+            # update GPM
             feature_list.append(U[:,0:r])
+            # update importance (Eq-2)
+            importance = ((args.scale_coff+1)*S[0:r])/(args.scale_coff*S[0:r] + max(S[0:r])) 
+            importance_list.append(importance)
     else:
         for i in range(len(mat_list)):
             activation = mat_list[i]
             U1,S1,Vh1=np.linalg.svd(activation, full_matrices=False)
             sval_total = (S1**2).sum()
-            act_hat = activation - np.dot(np.dot(feature_list[i],feature_list[i].transpose()),activation)
+            # Projected Representation (Eq-4)
+            act_proj = np.dot(np.dot(feature_list[i],feature_list[i].transpose()),activation)
+            r_old = feature_list[i].shape[1] # old GPM bases 
+            Uc,Sc,Vhc = np.linalg.svd(act_proj, full_matrices=False)
+            importance_new_on_old = np.dot(np.dot(feature_list[i].transpose(),Uc[:,0:r_old])**2, Sc[0:r_old]**2) ## r_old no of elm s**2 fmt
+            importance_new_on_old = np.sqrt(importance_new_on_old)
+            
+            act_hat = activation - act_proj
             U,S,Vh = np.linalg.svd(act_hat, full_matrices=False)
+            # criteria (Eq-5)
             sval_hat = (S**2).sum()
             sval_ratio = (S**2)/sval_total               
             accumulated_sval = (sval_total-sval_hat)/sval_total
@@ -390,39 +314,49 @@ def update_GradientMemory (model, mat_list, threshold, feature_list=[],):
                 else:
                     break
             if r == 0:
-                # log.info ('Skip Updating GPM for layer: {}'.format(i+1))
-                log.info (f'Skip Updating GPM for layer: {i+1}')
+                print ('Skip Updating GPM for layer: {}'.format(i+1)) 
+                # update importances 
+                importance = importance_new_on_old
+                importance = ((args.scale_coff+1)*importance)/(args.scale_coff*importance + max(importance)) 
+                importance [0:r_old] = np.clip(importance [0:r_old]+importance_list[i][0:r_old], 0, 1)
+                importance_list[i] = importance # update importance
                 continue
-            Ui=np.hstack((feature_list[i],U[:,0:r]))
+            # update GPM
+            Ui=np.hstack((feature_list[i],U[:,0:r]))  
+            # update importance 
+            importance = np.hstack((importance_new_on_old,S[0:r]))
+            importance = ((args.scale_coff+1)*importance)/(args.scale_coff*importance + max(importance))         
+            importance [0:r_old] = np.clip(importance [0:r_old]+importance_list[i][0:r_old], 0, 1) 
+
             if Ui.shape[1] > Ui.shape[0] :
                 feature_list[i]=Ui[:,0:Ui.shape[0]]
+                importance_list[i] = importance[0:Ui.shape[0]]
             else:
                 feature_list[i]=Ui
-    
-    log.info('-'*40)
-    log.info('Gradient Constraints Summary')
-    log.info('-'*40)
+                importance_list[i] = importance
+
+    print('-'*40)
+    print('Gradient Constraints Summary')
+    print('-'*40)
     for i in range(len(feature_list)):
-        # log.info ('Layer {} : {}/{}'.format(i+1,feature_list[i].shape[1], feature_list[i].shape[0]))
-        log.info (f'Layer {i+1} : {feature_list[i].shape[1]}/{feature_list[i].shape[0]}')
-    log.info('-'*40)
-    return feature_list  
+        print ('Layer {} : {}/{}'.format(i+1,feature_list[i].shape[1], feature_list[i].shape[0]))
+    print('-'*40)
+    return feature_list, importance_list  
 
 
 def main(args):
     tstart=time.time()
     ## Device Setting 
-    device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
-    # torch.manual_seed(args.seed)
-    # np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print (device)
+    ## setup seeds
+    # os.environ['PYTHONHASHSEED'] = str(seed)
     np.random.seed(args.seed)
-    # random.seed(seed)
+    torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)  # For multi-GPU setups
-    torch.backends.cudnn.deterministic = True
+    torch.cuda.manual_seed_all(args.seed)
     torch.backends.cudnn.benchmark = False
-
+    torch.backends.cudnn.deterministic = True
 
     ## Load CIFAR100 DATASET
     from dataloader import five_datasets as data_loader
@@ -435,12 +369,12 @@ def main(args):
     task_list = []
     for k,ncla in taskcla:
         # specify threshold hyperparameter
-        threshold = np.array([args.gpm_thro] * 20)
+        threshold = np.array([args.gpm_eps] * 20) + task_id * np.array([args.gpm_eps_inc] * 20)
      
-        log.info('*'*100)
-        # log.info('Task {:2d} ({:s})'.format(k,data[k]['name']))
-        log.info(f'Task {k:2d} ({data[k]["name"]:s})')
-        log.info('*'*100)
+        print('*'*100)
+        # print('Task {:2d} ({:s})'.format(k,data[k]['name']))
+        print(f'Task {k:2d} ({data[k]["name"]:s})')
+        print('*'*100)
         xtrain=data[k]['train']['x'].to(device)
         ytrain=data[k]['train']['y'].to(device)
         xvalid=data[k]['valid']['x'].to(device)
@@ -451,25 +385,24 @@ def main(args):
 
         lr = args.lr 
         best_loss=np.inf
-        log.info ('-'*40)
-        # log.info ('Task ID :{} | Learning Rate : {}'.format(task_id, lr))
-        log.info (f'Task ID :{task_id} | Learning Rate : {lr}')
-        log.info ('-'*40)
+        print ('-'*40)
+        # print ('Task ID :{} | Learning Rate : {}'.format(task_id, lr))
+        print (f'Task ID :{task_id} | Learning Rate : {lr}')
+        print ('-'*40)
         
         if task_id==0:
             model = ResNet18(taskcla,20).to(device) # base filters: 20
 
-            log.info ('Model parameters ---')
+            print ('Model parameters ---')
             for k_t, (m, param) in enumerate(model.named_parameters()):
-                # log.info (k_t,m,param.shape)
-                log.info(f"{k_t}, {m}, {param.shape}")
-            log.info ('-'*40)
- 
+                # print (k_t,m,param.shape)
+                print (k_t,m,param.shape)
+            print ('-'*40)
+
             best_model=get_model(model)
             feature_list =[]
-            # optimizer = optim.SGD(model.parameters(), lr=lr)
-            base_optimizer = optim.SGD(model.parameters(), lr=lr)
-            optimizer = SAM(base_optimizer, model)
+            importance_list = []
+            optimizer = optim.SGD(model.parameters(), lr=lr)
 
             for epoch in range(1, args.n_epochs+1):
                 # Train
@@ -477,88 +410,85 @@ def main(args):
                 train(args, model, device, xtrain, ytrain, optimizer, criterion, k)
                 clock1=time.time()
                 tr_loss,tr_acc = test(args, model, device, xtrain, ytrain,  criterion, k)
-                # log.info('Epoch {:3d} | Train: loss={:.3f}, acc={:5.1f}% | time={:5.1f}ms |'.format(epoch,\
-                #                                             tr_loss,tr_acc, 1000*(clock1-clock0)))
-                log.info(f'Epoch {epoch:3d} | Train: loss={tr_loss:.3f}, acc={tr_acc:5.1f}% | time={1000*(clock1-clock0):5.1f}ms |')
+                print('Epoch {:3d} | Train: loss={:.3f}, acc={:5.1f}% | time={:5.1f}ms |'.format(epoch,\
+                                                            tr_loss,tr_acc, 1000*(clock1-clock0)),end='')
                 # Validate
                 valid_loss,valid_acc = test(args, model, device, xvalid, yvalid,  criterion, k)
-                # log.info(' Valid: loss={:.3f}, acc={:5.1f}% |'.format(valid_loss, valid_acc))
-                log.info(f' Valid: loss={valid_loss:.3f}, acc={valid_acc:5.1f}% |')
+                print(' Valid: loss={:.3f}, acc={:5.1f}% |'.format(valid_loss, valid_acc),end='')
                 # Adapt lr
                 if valid_loss<best_loss:
                     best_loss=valid_loss
                     best_model=get_model(model)
                     patience=args.lr_patience
+                    print(' *',end='')
                 else:
                     patience-=1
                     if patience<=0:
                         lr/=args.lr_factor
-                        # log.info(' lr={:.1e}'.format(lr))
-                        log.info(f'lr={lr:.1e}')
+                        print(' lr={:.1e}'.format(lr),end='')
                         if lr<args.lr_min:
+                            print()
                             break
                         patience=args.lr_patience
-                        adjust_learning_rate(optimizer.optimizer, epoch, args)
+                        adjust_learning_rate(optimizer, epoch, args)
+                print()
             set_model_(model,best_model)
             # Test
-            log.info ('-'*40)
+            print ('-'*40)
             test_loss, test_acc = test(args, model, device, xtest, ytest,  criterion, k)
-            # log.info('Test: loss={:.3f} , acc={:5.1f}%'.format(test_loss,test_acc))
-            log.info(f'Test: loss={test_loss:.3f} , acc={test_acc:5.1f}%')
-            # Memory Update  
-            mat_list = get_representation_matrix_ResNet18 (model, device, xtrain, ytrain)
-            feature_list = update_GradientMemory (model, mat_list, threshold, feature_list)
+            print('Test: loss={:.3f} , acc={:5.1f}%'.format(test_loss,test_acc))
+            # Memory and Importance Update  
+            mat_list = get_representation_matrix_ResNet18(model, device, xtrain, ytrain)
+            feature_list, importance_list = update_SGP(args, model, mat_list, threshold, task_id, feature_list, importance_list)
 
         else:
-            # optimizer = optim.SGD(model.parameters(), lr=args.lr)
-            base_optimizer = optim.SGD(model.parameters(), lr=args.lr)
-            optimizer = SAM(base_optimizer, model)
-
+            optimizer = optim.SGD(model.parameters(), lr=args.lr)
             feature_mat = []
             # Projection Matrix Precomputation
+            # for i in range(len(model.act)):
+            # Debug:
             for i in range(len(feature_list)):
-                Uf=torch.Tensor(np.dot(feature_list[i],feature_list[i].transpose())).to(device)
-                # log.info('Layer {} - Projection Matrix shape: {}'.format(i+1,Uf.shape))
-                log.info(f'Layer {i+1} - Projection Matrix shape: {Uf.shape}')
+                Uf=torch.Tensor(np.dot(feature_list[i],np.dot(np.diag(importance_list[i]),feature_list[i].transpose()))).to(device) 
+                # print('Layer {} - Projection Matrix shape: {}'.format(i+1,Uf.shape))
+                Uf.requires_grad = False
                 feature_mat.append(Uf)
-            log.info ('-'*40)
+            # print ('-'*40)
             for epoch in range(1, args.n_epochs+1):
                 # Train 
                 clock0=time.time()
                 train_projected(args, model,device,xtrain, ytrain,optimizer,criterion,feature_mat,k)
                 clock1=time.time()
                 tr_loss, tr_acc = test(args, model, device, xtrain, ytrain,criterion,k)
-                # log.info('Epoch {:3d} | Train: loss={:.3f}, acc={:5.1f}% | time={:5.1f}ms |'.format(epoch,\
-                #                                         tr_loss, tr_acc, 1000*(clock1-clock0)))
-                log.info(f'Epoch {epoch:3d} | Train: loss={tr_loss:.3f}, acc={tr_acc:5.1f}% | time={1000*(clock1-clock0):5.1f}ms |')
+                print('Epoch {:3d} | Train: loss={:.3f}, acc={:5.1f}% | time={:5.1f}ms |'.format(epoch,\
+                                                        tr_loss, tr_acc, 1000*(clock1-clock0)),end='')
                 # Validate
                 valid_loss,valid_acc = test(args, model, device, xvalid, yvalid, criterion,k)
-                # log.info(' Valid: loss={:.3f}, acc={:5.1f}% |'.format(valid_loss, valid_acc))
-                log.info(f' Valid: loss={valid_loss:.3f}, acc={valid_acc:5.1f}% |')
+                print(' Valid: loss={:.3f}, acc={:5.1f}% |'.format(valid_loss, valid_acc),end='')
                 # Adapt lr
                 if valid_loss<best_loss:
                     best_loss=valid_loss
                     best_model=get_model(model)
                     patience=args.lr_patience
+                    print(' *',end='')
                 else:
                     patience-=1
                     if patience<=0:
                         lr/=args.lr_factor
-                        # log.info(' lr={:.1e}'.format(lr))
-                        log.info(f'lr={lr:.1e}')
+                        print(' lr={:.1e}'.format(lr),end='')
                         if lr<args.lr_min:
+                            print()
                             break
                         patience=args.lr_patience
-                        adjust_learning_rate(optimizer.optimizer, epoch, args)
+                        adjust_learning_rate(optimizer, epoch, args)
+                print()
             set_model_(model,best_model)
             # Test 
             test_loss, test_acc = test(args, model, device, xtest, ytest,  criterion,k)
-            # log.info('Test: loss={:.3f} , acc={:5.1f}%'.format(test_loss,test_acc))
-            log.info(f'Test: loss={test_loss:.3f} , acc={test_acc:5.1f}%')
-            # Memory Update 
+            print('Test: loss={:.3f} , acc={:5.1f}%'.format(test_loss,test_acc))  
+            # Memory and Importance Update 
             mat_list = get_representation_matrix_ResNet18 (model, device, xtrain, ytrain)
-            feature_list = update_GradientMemory (model, mat_list, threshold, feature_list)
-
+            feature_list, importance_list = update_SGP (args, model, mat_list, threshold, task_id, feature_list, importance_list)
+        
         # save accuracy 
         jj = 0 
         for ii in np.array(task_list)[0:task_id+1]:
@@ -566,52 +496,33 @@ def main(args):
             ytest =data[ii]['test']['y'].to(device)
             _, acc_matrix[task_id,jj] = test(args, model, device, xtest, ytest,criterion,ii) 
             jj +=1
-        log.info('Accuracies =')
-        for i_a in range(task_id + 1):
-            acc_ = ''
+        print('Accuracies =')
+        for i_a in range(task_id+1):
+            print('\t',end='')
             for j_a in range(acc_matrix.shape[1]):
-                # acc_ += '{:5.1f}% '.format(acc_matrix[i_a, j_a])
-                acc_ += f'{acc_matrix[i_a, j_a]:5.1f}% '
-            log.info(acc_)
+                print('{:5.1f}% '.format(acc_matrix[i_a,j_a]),end='')
+            print()
         # update task id 
         task_id +=1
-        
-    log.info('-'*50)
-    # Simulation Results 
-    # log.info ('Task Order : {}'.format(np.array(task_list)))
-    # log.info ('Final Avg Accuracy: {:5.2f}%'.format(acc_matrix[-1].mean()))
-    log.info (f'Task Order : {np.array(task_list)}')
-    log.info (f'Final Avg Accuracy: {acc_matrix[-1].mean():5.2f}%')
-    bwt=np.mean((acc_matrix[-1]-np.diag(acc_matrix))[:-1]) 
-    # log.info ('Backward transfer: {:5.2f}%'.format(bwt))
-    # log.info('[Elapsed time = {:.1f} ms]'.format((time.time()-tstart)*1000))
-    log.info (f'Backward transfer: {bwt:5.2f}%')
-    log.info(f'[Elapsed time = {(time.time()-tstart)*1000:.1f} ms]')
-    log.info('-'*50)
-    return acc_matrix[-1].mean(), bwt
+    print('-'*50)
 
-def create_log_dir(path, filename='log.log'):
-    import logging
-    if not os.path.exists(path):
-        os.makedirs(path)
-    logger = logging.getLogger(path)
-    logger.setLevel(logging.DEBUG)
-    fh = logging.FileHandler(path+'/'+filename)
-    fh.setLevel(logging.DEBUG)
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.DEBUG)
-    logger.addHandler(fh)
-    logger.addHandler(ch)
-    return logger
+    # Simulation Results 
+    # print ('Task Order : {}'.format(np.array(task_list)))
+    # print("Configs: seed: {} | lr: {} | gpm_eps: {} | gpm_eps_inc: {} | scale_coff: {}".format(args.seed,args.lr,args.gpm_eps,args.gpm_eps_inc,args.scale_coff)) 
+    print ('Final Avg Accuracy: {:5.2f}%'.format(acc_matrix[-1].mean())) 
+    bwt=np.mean((acc_matrix[-1]-np.diag(acc_matrix))[:-1]) 
+    print ('Backward transfer: {:5.2f}%'.format(bwt))
+    print('[Elapsed time = {:.1f} ms]'.format((time.time()-tstart)*1000))
+    print('-'*50)
 
 if __name__ == "__main__":
     # Training parameters
-    parser = argparse.ArgumentParser(description='five datasets with DFGP')
+    parser = argparse.ArgumentParser(description='5-split 5 datasets with SGP')
     parser.add_argument('--batch_size_train', type=int, default=64, metavar='N',
                         help='input batch size for training (default: 64)')
     parser.add_argument('--batch_size_test', type=int, default=64, metavar='N',
                         help='input batch size for testing (default: 64)')
-    parser.add_argument('--n_epochs', type=int, default=100, metavar='N',
+    parser.add_argument('--n_epochs', type=int, default=200, metavar='N',
                         help='number of training epochs/task (default: 200)')
     parser.add_argument('--seed', type=int, default=37, metavar='S',
                         help='random seed (default: 37)')
@@ -628,50 +539,20 @@ if __name__ == "__main__":
                         help='hold before decaying lr (default: 6)')
     parser.add_argument('--lr_factor', type=int, default=3, metavar='LRF',
                         help='lr decay factor (default: 2)')
-    parser.add_argument('--savename', type=str, default='./logs/FIVE/',
-                        help='save path')
+    # SGP/GPM specific 
+    parser.add_argument('--scale_coff', type=int, default=10, metavar='SCF',
+                        help='importance co-efficeint (default: 10)')
+    parser.add_argument('--gpm_eps', type=float, default=0.97, metavar='EPS',
+                        help='threshold (default: 0.97)')
+    parser.add_argument('--gpm_eps_inc', type=float, default=0.003, metavar='EPSI',
+                        help='threshold increment per task (default: 0.003)')
 
-    # parser.add_argument('--savename', type=str, default='/mnt/lab-storage/cuong/2509-OCL/test-dfgp/logs/FIVE/',
-    #                     help='save path')
-    parser.add_argument('--gpm_thro', type=float, default=0.95, metavar='THR',
-                        help='projection thr')
-    parser.add_argument('--mixup_alpha', type=float, default=1, metavar='Alpha',
-                        help='mixup_alpha')
-    parser.add_argument('--mixup_weight', type=float, default=0.1, metavar='Weight',
-                        help='mixup_weight')
 
     args = parser.parse_args()
-    str_time_ = time.strftime('%Y%m%d_%H%M%S', time.localtime(time.time()))
-    # log = create_log_dir(args.savename, 'log_{}.txt'.format(str_time_))
-    log = create_log_dir(args.savename, f'log_{str_time_}.txt')
+    print('='*100)
+    print('Arguments =')
+    for arg in vars(args):
+        print('\t'+arg+':',getattr(args,arg))
+    print('='*100)
 
-    for mixup_weight in [0.01, 0.001, 0.0001]:
-    # for mixup_weight in [0.0001]:
-
-        accs, bwts = [], []
-        str_time = str_time_ + '_' + str(mixup_weight)
-
-        args.mixup_weight = mixup_weight
-
-        # for seed_ in [1, 2]:
-        for seed_ in [1]:
-            try:
-                args.seed = seed_
-                log.info('=' * 100)
-                log.info('Arguments =')
-                log.info(str(args))
-                log.info('=' * 100)
-
-                acc, bwt = main(args)
-                accs.append(acc)
-                bwts.append(bwt)
-            except Exception as e:
-                log.error(f"seed {seed_} Error: {type(e).__name__}: {str(e)}")
-                import traceback
-                log.error(traceback.format_exc())
-
-
-
-
-
-
+    main(args)

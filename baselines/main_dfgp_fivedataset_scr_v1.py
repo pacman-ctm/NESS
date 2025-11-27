@@ -316,12 +316,13 @@ def adjust_learning_rate(optimizer, epoch, args):
 
 #         # Gradient Projections 
 #         kk = 0 
-#         for k, (m, params) in enumerate(model.named_parameters()):
-#             if k < 15 and len(params.size()) != 1:
-#                 sz = params.grad.data.size(0)
-#                 params.grad.data = params.grad.data - torch.mm(params.grad.data.view(sz, -1), feature_mat[kk]).view(params.size())
-#                 kk += 1
-#             elif (k < 15 and len(params.size()) == 1) and task_id != 0:
+#         for k, (m,params) in enumerate(model.named_parameters()):
+#             if len(params.size())==4:
+#                 sz =  params.grad.data.size(0)
+#                 params.grad.data = params.grad.data - torch.mm(params.grad.data.view(sz,-1),\
+#                                                     feature_mat[kk]).view(params.size())
+#                 kk+=1
+#             elif len(params.size())==1 and task_id !=0:
 #                 params.grad.data.fill_(0)
 
 #         optimizer.step()
@@ -377,12 +378,13 @@ def train_projected(args, model, device, x, y, optimizer, criterion, feature_mat
 
         # Gradient Projections 
         kk = 0 
-        for k, (m, params) in enumerate(model.named_parameters()):
-            if k < 15 and len(params.size()) != 1:
-                sz = params.grad.data.size(0)
-                params.grad.data = params.grad.data - torch.mm(params.grad.data.view(sz, -1), feature_mat[kk]).view(params.size())
-                kk += 1
-            elif (k < 15 and len(params.size()) == 1) and task_id != 0:
+        for k, (m,params) in enumerate(model.named_parameters()):
+            if len(params.size())==4:
+                sz =  params.grad.data.size(0)
+                params.grad.data = params.grad.data - torch.mm(params.grad.data.view(sz,-1),\
+                                                    feature_mat[kk]).view(params.size())
+                kk+=1
+            elif len(params.size())==1 and task_id !=0:
                 params.grad.data.fill_(0)
 
         optimizer.step()
@@ -773,11 +775,11 @@ if __name__ == "__main__":
                         help='hold before decaying lr (default: 6)')
     parser.add_argument('--lr_factor', type=int, default=3, metavar='LRF',
                         help='lr decay factor (default: 2)')
-    # parser.add_argument('--savename', type=str, default='./logs/FIVE/',
-    #                     help='save path')
-
-    parser.add_argument('--savename', type=str, default='/mnt/lab-storage/cuong/2509-OCL/test-dfgp/logs/FIVE/',
+    parser.add_argument('--savename', type=str, default='./logs/FIVE/',
                         help='save path')
+
+    # parser.add_argument('--savename', type=str, default='/mnt/lab-storage/cuong/2509-OCL/test-dfgp/logs/FIVE/',
+    #                     help='save path')
     parser.add_argument('--gpm_thro', type=float, default=0.95, metavar='THR',
                         help='projection thr')
     parser.add_argument('--mixup_alpha', type=float, default=1, metavar='Alpha',

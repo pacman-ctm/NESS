@@ -603,10 +603,10 @@ if __name__ == "__main__":
                         help='hold before decaying lr (default: 6)')
     parser.add_argument('--lr_factor', type=int, default=3, metavar='LRF',
                         help='lr decay factor (default: 2)')
-    # parser.add_argument('--savename', type=str, default='./logs/MINI/',
-    #                     help='save path')
-    parser.add_argument('--savename', type=str, default='/mnt/lab-storage/cuong/2509-OCL/test-dfgp/logs/MINI/',
+    parser.add_argument('--savename', type=str, default='./logs/MINI/',
                         help='save path')
+    # parser.add_argument('--savename', type=str, default='/mnt/lab-storage/cuong/2509-OCL/test-dfgp/logs/MINI/',
+    #                     help='save path')
     parser.add_argument('--gpm_thro', type=float, default=0.97, metavar='gradient projection',
                         help='gpm_thro')
     parser.add_argument('--mixup_alpha', type=float, default=20, metavar='Alpha',
