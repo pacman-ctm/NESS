@@ -340,8 +340,55 @@ def get_representation_matrix_ResNet18 (net, device, x, y=None):
         log.info(f"Layer {i+1} : {mat_final[i].shape}")
     log.info('-'*30)
     return mat_final    
+# def update_GradientMemory (model, mat_list, threshold, feature_list=[],):
+#     # log.info ('Threshold: ', threshold)
+#     log.info(f"Threshold: {threshold}")
+#     if not feature_list:
+#         # After First Task 
+#         for i in range(len(mat_list)):
+#             activation = mat_list[i]
+#             U,S,Vh = np.linalg.svd(activation, full_matrices=False)
+#             sval_total = (S**2).sum()
+#             sval_ratio = (S**2)/sval_total
+#             r = np.sum(np.cumsum(sval_ratio)<threshold[i]) #+1  
+#             feature_list.append(U[:,0:r])
+#     else:
+#         for i in range(len(mat_list)):
+#             activation = mat_list[i]
+#             U1,S1,Vh1=np.linalg.svd(activation, full_matrices=False)
+#             sval_total = (S1**2).sum()
+#             act_hat = activation - np.dot(np.dot(feature_list[i],feature_list[i].transpose()),activation)
+#             U,S,Vh = np.linalg.svd(act_hat, full_matrices=False)
+#             sval_hat = (S**2).sum()
+#             sval_ratio = (S**2)/sval_total               
+#             accumulated_sval = (sval_total-sval_hat)/sval_total
+            
+#             r = 0
+#             for ii in range (sval_ratio.shape[0]):
+#                 if accumulated_sval < threshold[i]:
+#                     accumulated_sval += sval_ratio[ii]
+#                     r += 1
+#                 else:
+#                     break
+#             if r == 0:
+#                 # log.info ('Skip Updating GPM for layer: {}'.format(i+1))
+#                 log.info (f'Skip Updating GPM for layer: {i+1}')
+#                 continue
+#             Ui=np.hstack((feature_list[i],U[:,0:r]))
+#             if Ui.shape[1] > Ui.shape[0] :
+#                 feature_list[i]=Ui[:,0:Ui.shape[0]]
+#             else:
+#                 feature_list[i]=Ui
+    
+#     log.info('-'*40)
+#     log.info('Gradient Constraints Summary')
+#     log.info('-'*40)
+#     for i in range(len(feature_list)):
+#         # log.info ('Layer {} : {}/{}'.format(i+1,feature_list[i].shape[1], feature_list[i].shape[0]))
+#         log.info (f'Layer {i+1} : {feature_list[i].shape[1]}/{feature_list[i].shape[0]}')
+#     log.info('-'*40)
+#     return feature_list  
 def update_GradientMemory (model, mat_list, threshold, feature_list=[],):
-    # log.info ('Threshold: ', threshold)
     log.info(f"Threshold: {threshold}")
     if not feature_list:
         # After First Task 
@@ -350,15 +397,43 @@ def update_GradientMemory (model, mat_list, threshold, feature_list=[],):
             U,S,Vh = np.linalg.svd(activation, full_matrices=False)
             sval_total = (S**2).sum()
             sval_ratio = (S**2)/sval_total
-            r = np.sum(np.cumsum(sval_ratio)<threshold[i]) #+1  
+            r = np.sum(np.cumsum(sval_ratio)<threshold[i])
             feature_list.append(U[:,0:r])
     else:
         for i in range(len(mat_list)):
             activation = mat_list[i]
             U1,S1,Vh1=np.linalg.svd(activation, full_matrices=False)
             sval_total = (S1**2).sum()
+            
+            # Project out previous subspace
             act_hat = activation - np.dot(np.dot(feature_list[i],feature_list[i].transpose()),activation)
-            U,S,Vh = np.linalg.svd(act_hat, full_matrices=False)
+            
+            # Check if residual is too small (numerical stability)
+            residual_norm = np.linalg.norm(act_hat, 'fro')
+            if residual_norm < 1e-7:
+                log.info(f'Skip Updating GPM for layer: {i+1} (residual too small: {residual_norm:.2e})')
+                continue
+            
+            # Try SVD with error handling
+            try:
+                U,S,Vh = np.linalg.svd(act_hat, full_matrices=False)
+            except np.linalg.LinAlgError:
+                log.warning(f'SVD did not converge for layer {i+1}, trying alternative method')
+                # Fallback: use eigendecomposition on act_hat @ act_hat.T
+                try:
+                    cov = np.dot(act_hat, act_hat.T)
+                    # Add small regularization for numerical stability
+                    cov += 1e-10 * np.eye(cov.shape[0])
+                    eigenvalues, eigenvectors = np.linalg.eigh(cov)
+                    # Sort in descending order
+                    idx = eigenvalues.argsort()[::-1]
+                    S = np.sqrt(np.maximum(eigenvalues[idx], 0))  # Ensure non-negative
+                    U = eigenvectors[:, idx]
+                except Exception as e:
+                    log.error(f'Both SVD and eigendecomposition failed for layer {i+1}: {e}')
+                    log.info(f'Skip Updating GPM for layer: {i+1}')
+                    continue
+            
             sval_hat = (S**2).sum()
             sval_ratio = (S**2)/sval_total               
             accumulated_sval = (sval_total-sval_hat)/sval_total
@@ -370,12 +445,13 @@ def update_GradientMemory (model, mat_list, threshold, feature_list=[],):
                     r += 1
                 else:
                     break
+            
             if r == 0:
-                # log.info ('Skip Updating GPM for layer: {}'.format(i+1))
                 log.info (f'Skip Updating GPM for layer: {i+1}')
                 continue
+                
             Ui=np.hstack((feature_list[i],U[:,0:r]))
-            if Ui.shape[1] > Ui.shape[0] :
+            if Ui.shape[1] > Ui.shape[0]:
                 feature_list[i]=Ui[:,0:Ui.shape[0]]
             else:
                 feature_list[i]=Ui
@@ -384,14 +460,14 @@ def update_GradientMemory (model, mat_list, threshold, feature_list=[],):
     log.info('Gradient Constraints Summary')
     log.info('-'*40)
     for i in range(len(feature_list)):
-        # log.info ('Layer {} : {}/{}'.format(i+1,feature_list[i].shape[1], feature_list[i].shape[0]))
         log.info (f'Layer {i+1} : {feature_list[i].shape[1]}/{feature_list[i].shape[0]}')
     log.info('-'*40)
-    return feature_list  
+    return feature_list
+
 def main(args):
     tstart=time.time()
     ## Device Setting 
-    device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     # torch.manual_seed(args.seed)
     # np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -557,7 +633,7 @@ def main(args):
     # log.info ('Task Order : {}'.format(np.array(task_list)))
     # log.info ('Final Avg Accuracy: {:5.2f}%'.format(acc_matrix[-1].mean()))
     log.info (f'Task Order : {np.array(task_list)}')
-    log.info (f'Final Avg Accuracy: {acc_matrix[-1].mean():5.2f}%')
+    log.info (f'Final Avg Accuracy for seed {args.seed}: {acc_matrix[-1].mean():5.2f}%')
     bwt=np.mean((acc_matrix[-1]-np.diag(acc_matrix))[:-1]) 
     # log.info ('Backward transfer: {:5.2f}%'.format(bwt))
     # log.info('[Elapsed time = {:.1f} ms]'.format((time.time()-tstart)*1000))
@@ -620,15 +696,15 @@ if __name__ == "__main__":
     # log = create_log_dir(args.savename, 'log_{}.txt'.format(str_time_))
     log = create_log_dir(args.savename, f'log_{str_time_}.txt')
 
-    for mixup_weight in [0.0001, 0.01, 0.05, 0.1]:
-    # for mixup_weight in [0.0001]:
+    # for mixup_weight in [0.0001, 0.01, 0.05, 0.1]:
+    for mixup_weight in [0.1]:
 
         accs, bwts = [], []
         str_time = str_time_ + '_' + str(mixup_weight)
         args.mixup_weight = mixup_weight
 
         # for seed_ in [1, 2]:
-        for seed_ in [1]:
+        for seed_ in [3]:
             try:
                 args.seed = seed_
                 log.info('=' * 100)

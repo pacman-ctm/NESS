@@ -104,135 +104,82 @@ def adjust_learning_rate(optimizer, epoch, args):
 def beta_distributions(size, alpha=1):
     return np.random.beta(alpha, alpha, size=size)
 
-class AugModule(nn.Module):
-    def __init__(self):
-        super(AugModule, self).__init__()
 
-    def forward(self, xs, lam, y, index):
-        x_ori = xs
-        N = x_ori.size()[0]
-        x_ori_perm = x_ori[index, :]
-        lam = lam.view((N, 1, 1, 1)).expand_as(x_ori)
-        x_mix = (1 - lam) * x_ori + lam * x_ori_perm
-        y_a, y_b = y, y[index]
-        return x_mix, y_a, y_b
-
-def mixup_criterion(criterion, pred, y_a, y_b, lam):
-    loss_a = lam * criterion(pred, y_a)
-    loss_b = (1 - lam) * criterion(pred, y_b)
-    return loss_a.mean() + loss_b.mean()
-
-def train(args, model, device, x,y, optimizer,criterion, task_id):
+# Debug 2: New train, train_projected using SAM
+def train(args, model, device, x, y, optimizer, criterion, task_id):
     model.train()
-    r=np.arange(x.size(0))
+    r = np.arange(x.size(0))
     np.random.shuffle(r)
-    # r=torch.LongTensor(r).to(device)
-    r = torch.LongTensor(r) # DEBUG
-    aug_model = AugModule()
+    r = torch.LongTensor(r)
+    
     # Loop batches
-    for i in range(0,len(r),args.batch_size_train):
-        if i+args.batch_size_train<=len(r): b=r[i:i+args.batch_size_train]
-        else: b=r[i:]
-        data = x[b]
-        raw_data, raw_target = data.to(device), y[b].to(device)
+    for i in range(0, len(r), args.batch_size_train):
+        if i + args.batch_size_train <= len(r): 
+            b = r[i:i + args.batch_size_train]
+        else: 
+            b = r[i:]
+        
+        data = x[b].to(device)
+        target = y[b].to(device)
 
-        # Data Perturbation Step
-        # initialize lamb mix:
-        N = data.shape[0]
-        lam = (beta_distributions(size=N, alpha=args.mixup_alpha)).astype(np.float32)
-        lam_adv = Variable(torch.from_numpy(lam)).to(device)
-        lam_adv = torch.clamp(lam_adv, 0, 1)  # clamp to range [0,1)
-        lam_adv.requires_grad = True
-
-        # index = torch.randperm(N).cuda()
-        index = torch.randperm(N).to(device)
-        # initialize x_mix
-        mix_inputs, mix_targets_a, mix_targets_b = aug_model(raw_data, lam_adv, raw_target, index)
-
-        # Weight and Data Ascent Step
-        output1 = model(raw_data)[task_id]
-        output2 = model(mix_inputs)[task_id]
-        loss = criterion(output1, raw_target) + args.mixup_weight * mixup_criterion(criterion, output2, mix_targets_a, mix_targets_b, lam_adv.detach())
+        # Weight Ascent Step (SAM)
+        output = model(data)[task_id]
+        loss = criterion(output, target)
         loss.backward()
-        grad_lam_adv = lam_adv.grad.data
-        grad_norm = torch.norm(grad_lam_adv, p=2) + 1.e-16
-        lam_adv.data.add_(grad_lam_adv * 0.05 / grad_norm)  # gradient assend by SAM
-        lam_adv = torch.clamp(lam_adv, 0, 1)
         optimizer.perturb_step()
 
-        # Weight Descent Step
-        mix_inputs, mix_targets_a, mix_targets_b = aug_model(raw_data, lam_adv, raw_target, index)
-        mix_inputs = mix_inputs.detach()
-        lam_adv = lam_adv.detach()
-
-        output1 = model(raw_data)[task_id]
-        output2 = model(mix_inputs)[task_id]
-        loss = criterion(output1, raw_target) + args.mixup_weight * mixup_criterion(criterion, output2, mix_targets_a, mix_targets_b, lam_adv.detach())
+        # Weight Descent Step (SAM)
+        output = model(data)[task_id]
+        loss = criterion(output, target)
         loss.backward()
         optimizer.unperturb_step()
 
         # Update
         optimizer.step()
-def train_projected(args,model,device,x,y,optimizer,criterion,feature_mat,task_id):
+
+
+def train_projected(args, model, device, x, y, optimizer, criterion, feature_mat, task_id):
     model.train()
-    r=np.arange(x.size(0))
+    r = np.arange(x.size(0))
     np.random.shuffle(r)
-    r=torch.LongTensor(r).to(device)
-    # r = torch.LongTensor(r) # DEBUG
-    aug_model = AugModule()
+    r = torch.LongTensor(r).to(device)
+    
     # Loop batches
-    for i in range(0,len(r),args.batch_size_train):
-        if i+args.batch_size_train<=len(r): b=r[i:i+args.batch_size_train]
-        else: b=r[i:]
-        data = x[b]
-        data, target = data.to(device), y[b].to(device)
-        raw_data, raw_target = data.to(device), y[b].to(device)
+    for i in range(0, len(r), args.batch_size_train):
+        if i + args.batch_size_train <= len(r): 
+            b = r[i:i + args.batch_size_train]
+        else: 
+            b = r[i:]
+        
+        data = x[b].to(device)
+        target = y[b].to(device)
 
-        # Data Perturbation Step
-        # initialize lamb mix:
-        N = data.shape[0]
-        lam = (beta_distributions(size=N, alpha=args.mixup_alpha)).astype(np.float32)
-        lam_adv = Variable(torch.from_numpy(lam)).to(device)
-        lam_adv = torch.clamp(lam_adv, 0, 1)  # clamp to range [0,1)
-        lam_adv.requires_grad = True
-
-        # index = torch.randperm(N).cuda()
-        index = torch.randperm(N).to(device) # DEBUG
-        # initialize x_mix
-        mix_inputs, mix_targets_a, mix_targets_b = aug_model(raw_data, lam_adv, raw_target, index)
-
-        # Weight and Data Ascent Step
-        output1 = model(raw_data)[task_id]
-        output2 = model(mix_inputs)[task_id]
-        loss = criterion(output1, raw_target) + args.mixup_weight * mixup_criterion(criterion, output2, mix_targets_a, mix_targets_b, lam_adv.detach())
+        # Weight Ascent Step (SAM)
+        output = model(data)[task_id]
+        loss = criterion(output, target)
         loss.backward()
-        grad_lam_adv = lam_adv.grad.data
-        grad_norm = torch.norm(grad_lam_adv, p=2) + 1.e-16
-        lam_adv.data.add_(grad_lam_adv * 0.05 / grad_norm)  # gradient assend by SAM
-        lam_adv = torch.clamp(lam_adv, 0, 1)
         optimizer.perturb_step()
 
-        # Weight Descent Step
-        mix_inputs, mix_targets_a, mix_targets_b = aug_model(raw_data, lam_adv, raw_target, index)
-        mix_inputs = mix_inputs.detach()
-        lam_adv = lam_adv.detach()
-        output1 = model(raw_data)[task_id]
-        output2 = model(mix_inputs)[task_id]
-        loss = criterion(output1, raw_target) + args.mixup_weight * mixup_criterion(criterion, output2, mix_targets_a, mix_targets_b, lam_adv.detach())
+        # Weight Descent Step (SAM)
+        output = model(data)[task_id]
+        loss = criterion(output, target)
         loss.backward()
         optimizer.unperturb_step()
 
         # Gradient Projections 
         kk = 0 
-        for k, (m,params) in enumerate(model.named_parameters()):
-            if k<15 and len(params.size())!=1:
+        for k, (m, params) in enumerate(model.named_parameters()):
+            if k < 15 and len(params.size()) != 1:
                 sz = params.grad.data.size(0)
-                params.grad.data = params.grad.data - torch.mm(params.grad.data.view(sz,-1), feature_mat[kk]).view(params.size())
-                kk +=1
-            elif (k<15 and len(params.size())==1) and task_id !=0 :
+                params.grad.data = params.grad.data - torch.mm(params.grad.data.view(sz, -1), feature_mat[kk]).view(params.size())
+                kk += 1
+            elif (k < 15 and len(params.size()) == 1) and task_id != 0:
                 params.grad.data.fill_(0)
 
         optimizer.step()
+
+# End Debug 2: 
+
 def test(args, model, device, x, y, criterion, task_id):
     model.eval()
     total_loss = 0
@@ -490,6 +437,7 @@ def main(args):
                             break
                         patience=args.lr_patience
                         adjust_learning_rate(optimizer.optimizer, epoch, args)
+
                 log.info('')
             set_model_(model,best_model)
             # Test 
@@ -538,11 +486,11 @@ def create_log_dir(path, filename='log.log'):
         os.makedirs(path)
     logger = logging.getLogger(path)
     logger.setLevel(logging.DEBUG)
-    fh = logging.FileHandler(path+'/'+filename)
-    fh.setLevel(logging.DEBUG)
+    # fh = logging.FileHandler(path+'/'+filename)
+    # fh.setLevel(logging.DEBUG)
     ch = logging.StreamHandler()
     ch.setLevel(logging.DEBUG)
-    logger.addHandler(fh)
+    # logger.addHandler(fh)
     logger.addHandler(ch)
     return logger
 
@@ -572,6 +520,9 @@ if __name__ == "__main__":
                         help='lr decay factor (default: 2)')
     parser.add_argument('--savename', type=str, default='./logs/CIFAR100/',
                         help='save path')
+
+    # parser.add_argument('--savename', type=str, default='/mnt/lab-storage/cuong/2509-OCL/test-dfgp/logs/CIFAR100/',
+    #                     help='save path')
     parser.add_argument('--gpm_thro', type=float, default=0.95, metavar='gradient projection',
                         help='gpm_thro')
     parser.add_argument('--mixup_alpha', type=float, default=20, metavar='Alpha',
@@ -582,42 +533,33 @@ if __name__ == "__main__":
     args = parser.parse_args()
     str_time_ = time.strftime('%Y%m%d_%H%M%S', time.localtime(time.time()))
     # log = create_log_dir(args.savename, 'log_{}.txt'.format(str_time_))
-    log = create_log_dir(args.savename, f'log_{str_time_}.log')
+    log = create_log_dir(args.savename, f'log_dfgp_scr_{str_time_}.log')
+    
 
-    for mixup_weight in [0.01, 0.001, 0.0001]:
-        # for thro_ in [0.94, 0.95, 0.96]:
+    accs, bwts = [], []
 
-    # for mixup_weight in [0.0001]:
-        for thro_ in [0.96]:
+    # for seed_ in [1, 2]:
+    for seed_ in [1, 2, 3, 4, 37]:
+        try:
+            args.seed = seed_
+            log.info('=' * 100)
+            log.info('Arguments =')
+            log.info(str(args))
+            log.info('=' * 100)
 
-            accs, bwts = [], []
-            args.mixup_weight = mixup_weight
-            args.thro = thro_
+            train_begin_time = time.time()
+            acc, bwt = main(args)
+            print(time.time() - train_begin_time)
+            log.info(f"time cost = {str(time.time() - train_begin_time)}")
 
-            str_time = str_time_ + '_' + str(mixup_weight) +  '_' + str(thro_)
-
-            # for seed_ in [1, 2]:
-            for seed_ in [1, 2, 3, 4, 37]:
-                try:
-                    args.seed = seed_
-                    log.info('=' * 100)
-                    log.info('Arguments =')
-                    log.info(str(args))
-                    log.info('=' * 100)
-
-                    train_begin_time = time.time()
-                    acc, bwt = main(args)
-                    print(time.time() - train_begin_time)
-                    log.info(f"time cost = {str(time.time() - train_begin_time)}")
-
-                    accs.append(acc)
-                    bwts.append(bwt)
-                # except:
-                #     print("seed " + str(seed_) + "Error!!")
-                except Exception as e:
-                    log.error(f"seed {seed_} Error: {type(e).__name__}: {str(e)}")
-                    import traceback
-                    log.error(traceback.format_exc())
+            accs.append(acc)
+            bwts.append(bwt)
+        # except:
+        #     print("seed " + str(seed_) + "Error!!")
+        except Exception as e:
+            log.error(f"seed {seed_} Error: {type(e).__name__}: {str(e)}")
+            import traceback
+            log.error(traceback.format_exc())
 
 
 

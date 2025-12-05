@@ -1,6 +1,8 @@
 import torch
 import torch.optim as optim
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.nn.functional import relu, avg_pool2d
 from torch.autograd import Variable
 import os
 import os.path
@@ -9,173 +11,185 @@ import numpy as np
 import argparse,time
 from copy import deepcopy
 import time
-
-import torch.nn.functional as F
-from torch.utils.data import TensorDataset, DataLoader
-
 from flatness_minima import SAM
 
-## Define AlexNet model
+from torch.utils.data import TensorDataset, DataLoader
+
+## Define ResNet18 model
 def compute_conv_output_size(Lin,kernel_size,stride=1,padding=0,dilation=1):
     return int(np.floor((Lin+2*padding-dilation*(kernel_size-1)-1)/float(stride)+1))
 
-class AlexNet(nn.Module):
-    def __init__(self,taskcla):
-        super(AlexNet, self).__init__()
-        self.act=OrderedDict()
-        self.map =[]
-        self.ksize=[]
-        self.in_channel =[]
-        self.map.append(32)
-        self.conv1 = nn.Conv2d(3, 64, 4, bias=False)
-        self.bn1 = nn.BatchNorm2d(64, track_running_stats=False)
-        s=compute_conv_output_size(32,4)
-        s=s//2
-        self.ksize.append(4)
-        self.in_channel.append(3)
-        self.map.append(s)
-        self.conv2 = nn.Conv2d(64, 128, 3, bias=False)
-        self.bn2 = nn.BatchNorm2d(128, track_running_stats=False)
-        s=compute_conv_output_size(s,3)
-        s=s//2
-        self.ksize.append(3)
-        self.in_channel.append(64)
-        self.map.append(s)
-        self.conv3 = nn.Conv2d(128, 256, 2, bias=False)
-        self.bn3 = nn.BatchNorm2d(256, track_running_stats=False)
-        s=compute_conv_output_size(s,2)
-        s=s//2
-        self.smid=s
-        self.ksize.append(2)
-        self.in_channel.append(128)
-        self.map.append(256*self.smid*self.smid)
-        self.maxpool=torch.nn.MaxPool2d(2)
-        self.relu=torch.nn.ReLU()
-        self.drop1=torch.nn.Dropout(0.2)
-        self.drop2=torch.nn.Dropout(0.5)
+def conv3x3(in_planes, out_planes, stride=1):
+    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
+                     padding=1, bias=False)
+def conv7x7(in_planes, out_planes, stride=1):
+    return nn.Conv2d(in_planes, out_planes, kernel_size=7, stride=stride,
+                     padding=1, bias=False)
 
-        self.fc1 = nn.Linear(256*self.smid*self.smid,2048, bias=False)
-        self.bn4 = nn.BatchNorm1d(2048, track_running_stats=False)
-        self.fc2 = nn.Linear(2048,2048, bias=False)
-        self.bn5 = nn.BatchNorm1d(2048, track_running_stats=False)
-        self.map.extend([2048])
+class BasicBlock(nn.Module):
+    expansion = 1
+    def __init__(self, in_planes, planes, stride=1):
+        super(BasicBlock, self).__init__()
+        self.conv1 = conv3x3(in_planes, planes, stride)
+        self.bn1 = nn.BatchNorm2d(planes, track_running_stats=False)
+        self.conv2 = conv3x3(planes, planes)
+        self.bn2 = nn.BatchNorm2d(planes, track_running_stats=False)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != self.expansion * planes:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1,
+                          stride=stride, bias=False),
+                nn.BatchNorm2d(self.expansion * planes, track_running_stats=False)
+            )
+        self.act = OrderedDict()
+        self.count = 0
+
+    def forward(self, x):
+        self.count = self.count % 2 
+        # self.act['conv_{}'.format(self.count)] = x
+        self.act[f"conv_{self.count}"] = x
+        self.count +=1
+        out = relu(self.bn1(self.conv1(x)))
+        self.count = self.count % 2 
+        # self.act['conv_{}'.format(self.count)] = out
+        self.act[f"conv_{self.count}"] = out
+        self.count +=1
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = relu(out)
+        return out
+
+class ResNet(nn.Module):
+    def __init__(self, block, num_blocks, taskcla, nf):
+        super(ResNet, self).__init__()
+        self.in_planes = nf
+        self.conv1 = conv3x3(3, nf * 1, 1)
+        self.bn1 = nn.BatchNorm2d(nf * 1, track_running_stats=False)
+        self.layer1 = self._make_layer(block, nf * 1, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, nf * 2, num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, nf * 4, num_blocks[2], stride=2)
+        self.layer4 = self._make_layer(block, nf * 8, num_blocks[3], stride=2)
         
         self.taskcla = taskcla
-        self.fc3=torch.nn.ModuleList()
-        for t,n in self.taskcla:
-            self.fc3.append(torch.nn.Linear(2048,n,bias=False))
+        self.linear=torch.nn.ModuleList()
+        for t, n in self.taskcla:
+            self.linear.append(nn.Linear(nf * 8 * block.expansion * 4, n, bias=False))
+        self.act = OrderedDict()
+
+    def _make_layer(self, block, planes, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for stride in strides:
+            layers.append(block(self.in_planes, planes, stride))
+            self.in_planes = planes * block.expansion
+        return nn.Sequential(*layers)
+
     def forward(self, x):
-        bsz = deepcopy(x.size(0))
-        self.act['conv1']=x
-        x = self.conv1(x)
-        x = self.maxpool(self.drop1(self.relu(self.bn1(x))))
-
-        self.act['conv2']=x
-        x = self.conv2(x)
-        x = self.maxpool(self.drop1(self.relu(self.bn2(x))))
-
-        self.act['conv3']=x
-        x = self.conv3(x)
-        x = self.maxpool(self.drop2(self.relu(self.bn3(x))))
-
-        x=x.view(bsz,-1)
-        self.act['fc1']=x
-        x = self.fc1(x)
-        x = self.drop2(self.relu(self.bn4(x)))
-
-        self.act['fc2']=x        
-        x = self.fc2(x)
-        x = self.drop2(self.relu(self.bn5(x)))
-
+        bsz = x.size(0)
+        self.act['conv_in'] = x.view(bsz, 3, 32, 32)
+        out = relu(self.bn1(self.conv1(x.view(bsz, 3, 32, 32)))) 
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.layer4(out)
+        out = avg_pool2d(out, 2)
+        out = out.view(out.size(0), -1)
         y=[]
         for t,i in self.taskcla:
-            y.append(self.fc3[t](x))
-            
+            y.append(self.linear[t](out))
         return y
+
+def ResNet18(taskcla, nf=32):
+    return ResNet(BasicBlock, [2, 2, 2, 2], taskcla, nf)
 
 def get_model(model):
     return deepcopy(model.state_dict())
+
 def set_model_(model,state_dict):
     model.load_state_dict(deepcopy(state_dict))
     return
+
 def adjust_learning_rate(optimizer, epoch, args):
     for param_group in optimizer.param_groups:
         if (epoch ==1):
             param_group['lr']=args.lr
         else:
             param_group['lr'] /= args.lr_factor  
-def beta_distributions(size, alpha=1):
-    return np.random.beta(alpha, alpha, size=size)
 
-class AugModule(nn.Module):
-    def __init__(self):
-        super(AugModule, self).__init__()
+# def beta_distributions(size, alpha=1):
+#     return np.random.beta(alpha, alpha, size=size)
 
-    def forward(self, xs, lam, y, index):
-        x_ori = xs
-        N = x_ori.size()[0]
-        x_ori_perm = x_ori[index, :]
-        lam = lam.view((N, 1, 1, 1)).expand_as(x_ori)
-        x_mix = (1 - lam) * x_ori + lam * x_ori_perm
-        y_a, y_b = y, y[index]
-        return x_mix, y_a, y_b
+# class AugModule(nn.Module):
+#     def __init__(self):
+#         super(AugModule, self).__init__()
 
-def mixup_criterion(criterion, pred, y_a, y_b, lam):
-    loss_a = lam * criterion(pred, y_a)
-    loss_b = (1 - lam) * criterion(pred, y_b)
-    return loss_a.mean() + loss_b.mean()
+#     def forward(self, xs, lam, y, index):
+#         x_ori = xs
+#         N = x_ori.size()[0]
+#         x_ori_perm = x_ori[index, :]
+#         lam = lam.view((N, 1, 1, 1)).expand_as(x_ori)
+#         x_mix = (1 - lam) * x_ori + lam * x_ori_perm
+#         y_a, y_b = y, y[index]
+#         return x_mix, y_a, y_b
 
-def train(args, model, device, x,y, optimizer,criterion, task_id):
-    model.train()
-    r=np.arange(x.size(0))
-    np.random.shuffle(r)
-    # r=torch.LongTensor(r).to(device)
-    r = torch.LongTensor(r) # DEBUG
-    aug_model = AugModule()
-    # Loop batches
-    for i in range(0,len(r),args.batch_size_train):
-        if i+args.batch_size_train<=len(r): b=r[i:i+args.batch_size_train]
-        else: b=r[i:]
-        data = x[b]
-        raw_data, raw_target = data.to(device), y[b].to(device)
+# def mixup_criterion(criterion, pred, y_a, y_b, lam):
+#     loss_a = lam * criterion(pred, y_a)
+#     loss_b = (1 - lam) * criterion(pred, y_b)
+#     return loss_a.mean() + loss_b.mean()
 
-        # Data Perturbation Step
-        # initialize lamb mix:
-        N = data.shape[0]
-        lam = (beta_distributions(size=N, alpha=args.mixup_alpha)).astype(np.float32)
-        lam_adv = Variable(torch.from_numpy(lam)).to(device)
-        lam_adv = torch.clamp(lam_adv, 0, 1)  # clamp to range [0,1)
-        lam_adv.requires_grad = True
+# def train(args, model, device, x,y, optimizer,criterion, task_id):
+#     model.train()
+#     r=np.arange(x.size(0))
+#     np.random.shuffle(r)
+#     r=torch.LongTensor(r).to(device)
+#     # r = torch.LongTensor(r) # DEBUG
+#     aug_model = AugModule()
+#     # Loop batches
+#     for i in range(0,len(r),args.batch_size_train):
+#         if i+args.batch_size_train<=len(r): b=r[i:i+args.batch_size_train]
+#         else: b=r[i:]
+#         data = x[b]
+#         data, target = data.to(device), y[b].to(device)
+#         raw_data, raw_target = data.to(device), y[b].to(device)
 
-        # index = torch.randperm(N).cuda()
-        index = torch.randperm(N).to(device)
-        # initialize x_mix
-        mix_inputs, mix_targets_a, mix_targets_b = aug_model(raw_data, lam_adv, raw_target, index)
+#         # Data Perturbation Step
+#         # initialize lamb mix:
+#         N = data.shape[0]
+#         lam = (beta_distributions(size=N, alpha=args.mixup_alpha)).astype(np.float32)
+#         lam_adv = Variable(torch.from_numpy(lam)).to(device)
+#         lam_adv = torch.clamp(lam_adv, 0, 1)  # clamp to range [0,1)
+#         lam_adv.requires_grad = True
 
-        # Weight and Data Ascent Step
-        output1 = model(raw_data)[task_id]
-        output2 = model(mix_inputs)[task_id]
-        loss = criterion(output1, raw_target) + args.mixup_weight * mixup_criterion(criterion, output2, mix_targets_a, mix_targets_b, lam_adv.detach())
-        loss.backward()
-        grad_lam_adv = lam_adv.grad.data
-        grad_norm = torch.norm(grad_lam_adv, p=2) + 1.e-16
-        lam_adv.data.add_(grad_lam_adv * 0.05 / grad_norm)  # gradient assend by SAM
-        lam_adv = torch.clamp(lam_adv, 0, 1)
-        optimizer.perturb_step()
+#         # index = torch.randperm(N).cuda()
+#         index = torch.randperm(N).to(device) # DEBUG
+#         # initialize x_mix
+#         mix_inputs, mix_targets_a, mix_targets_b = aug_model(raw_data, lam_adv, raw_target, index)
 
-        # Weight Descent Step
-        mix_inputs, mix_targets_a, mix_targets_b = aug_model(raw_data, lam_adv, raw_target, index)
-        mix_inputs = mix_inputs.detach()
-        lam_adv = lam_adv.detach()
+#         # Weight and Data Ascent Step
+#         output1 = model(raw_data)[task_id]
+#         output2 = model(mix_inputs)[task_id]
+#         loss = criterion(output1, raw_target) + args.mixup_weight * mixup_criterion(criterion, output2, mix_targets_a, mix_targets_b, lam_adv.detach())
+#         loss.backward()
+#         grad_lam_adv = lam_adv.grad.data
+#         grad_norm = torch.norm(grad_lam_adv, p=2) + 1.e-16
+#         lam_adv.data.add_(grad_lam_adv * 0.05 / grad_norm)  # gradient assend by SAM
+#         lam_adv = torch.clamp(lam_adv, 0, 1)
+#         optimizer.perturb_step()
 
-        output1 = model(raw_data)[task_id]
-        output2 = model(mix_inputs)[task_id]
-        loss = criterion(output1, raw_target) + args.mixup_weight * mixup_criterion(criterion, output2, mix_targets_a, mix_targets_b, lam_adv.detach())
-        loss.backward()
-        optimizer.unperturb_step()
+#         # Weight Descent Step
+#         mix_inputs, mix_targets_a, mix_targets_b = aug_model(raw_data, lam_adv, raw_target, index)
+#         mix_inputs = mix_inputs.detach()
+#         lam_adv = lam_adv.detach()
 
-        # Update
-        optimizer.step()
+#         output1 = model(raw_data)[task_id]
+#         output2 = model(mix_inputs)[task_id]
+#         loss = criterion(output1, raw_target) + args.mixup_weight * mixup_criterion(criterion, output2, mix_targets_a, mix_targets_b, lam_adv.detach())
+#         loss.backward()
+#         optimizer.unperturb_step()
+
+#         # Update
+#         optimizer.step()
 
 def test(args, model, device, x, y, criterion, task_id):
     model.eval()
@@ -184,8 +198,8 @@ def test(args, model, device, x, y, criterion, task_id):
     correct = 0
     r=np.arange(x.size(0))
     np.random.shuffle(r)
-    # r=torch.LongTensor(r).to(device)
-    r = torch.LongTensor(r) # DEBUG
+    r=torch.LongTensor(r).to(device)
+    # r = torch.LongTensor(r) # DEBUG
     with torch.no_grad():
         # Loop batches
         for i in range(0,len(r),args.batch_size_test):
@@ -339,7 +353,7 @@ class LinearAdapt(nn.Module):
         S_X_squared.clamp(min=0.0)  # in-place clamping since matrix is psd
         V_Xt = V_X.T 
         S_X = torch.sqrt(S_X_squared)
-        print(f"Singular values: {S_X}")
+        # print(f"Singular values: {S_X}")
 
         eps_tol = eps_rel_tol * S_X.sum()
         print(f"{eps_rel_tol = } - {eps_tol = }")
@@ -375,6 +389,13 @@ class LinearAdapt(nn.Module):
         if self.weight_V is None:
             return torch.zeros_like(self.old_linear.weight)
         return self.weight_U @ self.weight_V.T
+    
+    @torch.no_grad()
+    def merge_weights(self):
+        if self.weight_V is None:
+            return
+        self.old_linear.weight += self.delta_W
+        self.reset_parameters()
 
     def reset_parameters(self):
         if self.weight_U is not None:
@@ -401,7 +422,7 @@ class Conv2dAdapt(nn.Module):
         S_X_squared.clamp(min=0.0)  # in-place clamping since matrix is psd
         V_Xt = V_X.T
         S_X = torch.sqrt(S_X_squared)
-        print(f"Singular values: {S_X}")
+        # print(f"Singular values: {S_X}")
 
         eps_tol = eps_rel_tol * S_X.sum()
         print(f"{S_X.sum() = }")
@@ -437,6 +458,14 @@ class Conv2dAdapt(nn.Module):
             return torch.zeros_like(self.old_conv.weight)
         return self.weight_U @ self.weight_V.T
 
+    @torch.no_grad()
+    def merge_weights(self):
+        if self.weight_V is None:
+            return
+        delta_W_reshaped = self.delta_W.view_as(self.old_conv.weight)
+        self.old_conv.weight += delta_W_reshaped
+        self.reset_parameters()
+
     def reset_parameters(self):
         if self.weight_U is not None:
             nn.init.zeros_(self.weight_U)
@@ -452,6 +481,34 @@ class Conv2dAdapt(nn.Module):
 # END DEBUG
 
 # DEBUG: train_task_i
+# def train_task_i(args, model, device, x, y, optimizer, criterion, task_id):
+#     """
+#     Training function for tasks after the first task.
+#     Only trains the U parameters in adapted layers.
+#     """
+#     model.train()
+#     r = np.arange(x.size(0))
+#     np.random.shuffle(r)
+#     r = torch.LongTensor(r)
+    
+#     # Loop batches
+#     for i in range(0, len(r), args.batch_size_train):
+#         if i + args.batch_size_train <= len(r): 
+#             b = r[i:i+args.batch_size_train]
+#         else: 
+#             b = r[i:]
+        
+#         data = x[b].to(device)
+#         target = y[b].to(device)
+        
+#         optimizer.optimizer.zero_grad()
+#         output = model(data)[task_id]
+#         loss = criterion(output, target)
+#         loss.backward()
+#         optimizer.step()  # SAM's step() already calls zero_grad() internally
+# END DEBUG
+
+# Debug 2: New train, train_task_i using SAM
 def train_task_i(args, model, device, x, y, optimizer, criterion, task_id):
     """
     Training function for tasks after the first task.
@@ -472,63 +529,115 @@ def train_task_i(args, model, device, x, y, optimizer, criterion, task_id):
         data = x[b].to(device)
         target = y[b].to(device)
         
-        # Use optimizer.optimizer to access the base optimizer
         optimizer.optimizer.zero_grad()
         output = model(data)[task_id]
         loss = criterion(output, target)
         loss.backward()
         optimizer.step()  # SAM's step() already calls zero_grad() internally
-# END
+
+def train(args, model, device, x, y, optimizer, criterion, task_id):
+    model.train()
+    r = np.arange(x.size(0))
+    np.random.shuffle(r)
+    r = torch.LongTensor(r).to(device)
+    
+    # Loop batches
+    for i in range(0, len(r), args.batch_size_train):
+        if i + args.batch_size_train <= len(r): 
+            b = r[i:i + args.batch_size_train]
+        else: 
+            b = r[i:]
+        
+        data = x[b].to(device)
+        target = y[b].to(device)
+
+        # Weight Ascent Step (SAM)
+        output = model(data)[task_id]
+        loss = criterion(output, target)
+        loss.backward()
+        optimizer.perturb_step()
+
+        # Weight Descent Step (SAM)
+        output = model(data)[task_id]
+        loss = criterion(output, target)
+        loss.backward()
+        optimizer.unperturb_step()
+
+        # Update
+        optimizer.step()
+
+# End Debug 2
 
 
 def main(args):
     tstart=time.time()
     ## Device Setting 
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
+    # random.seed(seed)
+    torch.cuda.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)  # For multi-GPU setups
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
+    def get_last_layer_names(model):
+        """Returns names of the last layer(s) - typically task-specific heads"""
+        last_layers = []
+        for name, module in model.named_modules():
+            if isinstance(module, nn.ModuleList):
+                parent_name = name
+                for idx in range(len(module)):
+                    last_layers.append(f"{parent_name}.{idx}")
+        return last_layers
+    
     ## Load CIFAR100 DATASET
-    from dataloader import cifar100 as cf100
-    data,taskcla,inputsize=cf100.get(seed=args.seed, pc_valid=args.pc_valid)
+    from dataloader import five_datasets as data_loader
+    data,taskcla,inputsize=data_loader.get(pc_valid=args.pc_valid)
 
-    acc_matrix=np.zeros((10,10))
+    acc_matrix=np.zeros((5,5))
     criterion = torch.nn.CrossEntropyLoss()
 
     task_id = 0
     task_list = []
-
     all_previous_x = []  # will store [X_1, X_2, ..., X_{t-1}]
     all_previous_y = []
-    for k,ncla in taskcla:
-        threshold = np.array([args.gpm_thro] * 5)
 
+
+    for k,ncla in taskcla:
+        # specify threshold hyperparameter
+        threshold = np.array([args.gpm_thro] * 20)
+     
         log.info('*'*100)
+        # log.info('Task {:2d} ({:s})'.format(k,data[k]['name']))
         log.info(f'Task {k:2d} ({data[k]["name"]:s})')
         log.info('*'*100)
-        xtrain=data[k]['train']['x']
-        ytrain=data[k]['train']['y']
-        xvalid=data[k]['valid']['x']
-        yvalid=data[k]['valid']['y']
-        xtest =data[k]['test']['x']
-        ytest =data[k]['test']['y']
+        xtrain=data[k]['train']['x'].to(device)
+        ytrain=data[k]['train']['y'].to(device)
+        xvalid=data[k]['valid']['x'].to(device)
+        yvalid=data[k]['valid']['y'].to(device)
+        xtest =data[k]['test']['x'].to(device)
+        ytest =data[k]['test']['y'].to(device)
         task_list.append(k)
 
         lr = args.lr 
         best_loss=np.inf
         log.info ('-'*40)
+        # log.info ('Task ID :{} | Learning Rate : {}'.format(task_id, lr))
         log.info (f'Task ID :{task_id} | Learning Rate : {lr}')
         log.info ('-'*40)
         
         if task_id==0:
-            model = AlexNet(taskcla).to(device)
+            model = ResNet18(taskcla,20).to(device) # base filters: 20
+
             log.info ('Model parameters ---')
             for k_t, (m, param) in enumerate(model.named_parameters()):
                 log.info(f"{k_t}, {m}, {param.shape}")
             log.info ('-'*40)
-
+ 
             best_model=get_model(model)
             feature_list =[]
+            # optimizer = optim.SGD(model.parameters(), lr=lr)
             base_optimizer = optim.SGD(model.parameters(), lr=lr)
             optimizer = SAM(base_optimizer, model)
 
@@ -538,9 +647,12 @@ def main(args):
                 train(args, model, device, xtrain, ytrain, optimizer, criterion, k)
                 clock1=time.time()
                 tr_loss,tr_acc = test(args, model, device, xtrain, ytrain,  criterion, k)
+                # log.info('Epoch {:3d} | Train: loss={:.3f}, acc={:5.1f}% | time={:5.1f}ms |'.format(epoch,\
+                #                                             tr_loss,tr_acc, 1000*(clock1-clock0)))
                 log.info(f'Epoch {epoch:3d} | Train: loss={tr_loss:.3f}, acc={tr_acc:5.1f}% | time={1000*(clock1-clock0):5.1f}ms |')
                 # Validate
                 valid_loss,valid_acc = test(args, model, device, xvalid, yvalid,  criterion, k)
+                # log.info(' Valid: loss={:.3f}, acc={:5.1f}% |'.format(valid_loss, valid_acc))
                 log.info(f' Valid: loss={valid_loss:.3f}, acc={valid_acc:5.1f}% |')
                 # Adapt lr
                 if valid_loss<best_loss:
@@ -557,25 +669,90 @@ def main(args):
                             break
                         patience=args.lr_patience
                         adjust_learning_rate(optimizer.optimizer, epoch, args)
-                log.info('')
+
             set_model_(model,best_model)
             # Test
             log.info ('-'*40)
             test_loss, test_acc = test(args, model, device, xtest, ytest,  criterion, k)
             all_previous_x.append(xtrain.clone())
             all_previous_y.append(ytrain.clone())
+            # log.info('Test: loss={:.3f} , acc={:5.1f}%'.format(test_loss,test_acc))
             log.info(f'Test: loss={test_loss:.3f} , acc={test_acc:5.1f}%')
+            # Memory Update  
+            # mat_list = get_representation_matrix_ResNet18 (model, device, xtrain, ytrain)
+            # feature_list = update_GradientMemory (model, mat_list, threshold, feature_list)
 
-        else:  # task_id > 0
+            # DEBUG: Check weight after training
+            log.info('='*60)
+            log.info(f'AFTER TASK {task_id} TRAINING - Weight Statistics (with adaptations):')
+            for name, module in model.named_modules():
+                if 'old_conv' in name or 'old_linear' in name:
+                    continue
+                if isinstance(module, LinearAdapt):
+                    effective_weight = module.old_linear.weight + module.delta_W
+                    log.info(f'{name} (LinearAdapt):')
+                    log.info(f'  old_weight: mean={module.old_linear.weight.data.mean().item():.6f}, norm={module.old_linear.weight.data.norm().item():.6f}')
+                    log.info(f'  delta_W: mean={module.delta_W.data.mean().item():.6f}, norm={module.delta_W.data.norm().item():.6f}')
+                    log.info(f'  effective (old+delta): mean={effective_weight.data.mean().item():.6f}, norm={effective_weight.data.norm().item():.6f}')
+                elif isinstance(module, Conv2dAdapt):
+                    effective_weight = module.old_conv.weight + module.delta_W.view_as(module.old_conv.weight)
+                    log.info(f'{name} (Conv2dAdapt):')
+                    log.info(f'  old_weight: mean={module.old_conv.weight.data.mean().item():.6f}, norm={module.old_conv.weight.data.norm().item():.6f}')
+                    log.info(f'  delta_W: mean={module.delta_W.data.mean().item():.6f}, norm={module.delta_W.data.norm().item():.6f}')
+                    log.info(f'  effective (old+delta): mean={effective_weight.data.mean().item():.6f}, norm={effective_weight.data.norm().item():.6f}')
+                elif isinstance(module, (nn.Linear, nn.Conv2d)) and not name.startswith('fc3'):
+                    log.info(f'{name} ({type(module).__name__}):')
+                    log.info(f'  weight: mean={module.weight.data.mean().item():.6f}, norm={module.weight.data.norm().item():.6f}')
+            log.info('='*60)
+
+        elif task_id < args.debug_task_id:
+
+        # else:  # task_id > 0
             log.info('Adapting model for new task...')
+
+            # Get last layer names for current model
+            last_layer_names = get_last_layer_names(model)
+            log.info(f'Detected last layer names: {last_layer_names}')
+            
+            # DEBUG: Check weight before training
+            log.info('='*60)
+            log.info(f'BEFORE TASK {task_id} (before consolidation) - Weight Statistics:')
+            for name, module in model.named_modules():
+                # Skip last layers in this check
+                is_last_layer = any(name.startswith(ll) for ll in last_layer_names)
+                if is_last_layer:
+                    continue
+                    
+                if isinstance(module, LinearAdapt):
+                    effective_weight = module.old_linear.weight + module.delta_W
+                    log.info(f'{name} (LinearAdapt - from previous task):')
+                    log.info(f'  effective weight: mean={effective_weight.data.mean().item():.6f}, norm={effective_weight.data.norm().item():.6f}')
+                elif isinstance(module, Conv2dAdapt):
+                    effective_weight = module.old_conv.weight + module.delta_W.view_as(module.old_conv.weight)
+                    log.info(f'{name} (Conv2dAdapt - from previous task):')
+                    log.info(f'  effective weight: mean={effective_weight.data.mean().item():.6f}, norm={effective_weight.data.norm().item():.6f}')
+            log.info('='*60)
             
             # Concatenate all previous task data
             X_prev = torch.cat(all_previous_x, dim=0)
             Y_prev = torch.cat(all_previous_y, dim=0)
             log.info(f'Previous data shape: {X_prev.shape}, {Y_prev.shape}')
             
-            # List of layer names to adapt (linear and conv layers only)
-            layers_to_adapt = ['conv1', 'conv2', 'conv3', 'fc1', 'fc2']
+            # List of layer names to adapt (all linear and conv layers except last layers)
+            layers_to_adapt = []
+            for name, module in model.named_modules():
+                if 'old_conv' in name or 'old_linear' in name:
+                    continue
+                    
+                # Check if this is a last layer
+                is_last_layer = any(name.startswith(ll) for ll in last_layer_names)
+                
+                if isinstance(module, (nn.Linear, nn.Conv2d)) and not is_last_layer:
+                    layers_to_adapt.append(name)
+                elif isinstance(module, (LinearAdapt, Conv2dAdapt)) and not is_last_layer:
+                    layers_to_adapt.append(name)
+
+            log.info(f'Layers to adapt: {layers_to_adapt}')
             
             # For each layer, compute U and V, then replace with adapted version
             for layer_idx, layer_name in enumerate(layers_to_adapt):
@@ -583,61 +760,33 @@ def main(args):
                 
                 # Get the actual layer from model
                 layer_dict = dict(model.named_modules())
+                
                 if layer_name not in layer_dict:
                     log.info(f'Warning: Layer {layer_name} not found in model')
                     continue
-                layer = layer_dict[layer_name]
+                else:
+                    layer = layer_dict[layer_name]
                 
                 # Extract original layer and consolidate weights if already adapted
                 if isinstance(layer, (LinearAdapt, Conv2dAdapt)):
-                    log.info(f'Layer {layer_name} is already adapted, consolidating weights')
+                    log.info(f'Layer {layer_name} is already adapted, merging weights')
                     
-                    # Get current weights (original + accumulated adaptations)
+                    # Merge the adaptation (U @ V^T) into the base weights
+                    layer.merge_weights()
+                    
+                    # Extract the consolidated base layer
                     if isinstance(layer, LinearAdapt):
-                        current_weight = (layer.old_linear.weight + layer.delta_W).detach().clone()
-                        current_bias = layer.old_linear.bias.detach().clone() if layer.old_linear.bias is not None else None
-                        original_layer = layer.old_linear
-                        
-                        # Create a new base layer with accumulated weights
-                        new_base_layer = nn.Linear(
-                            original_layer.in_features,
-                            original_layer.out_features,
-                            bias=(current_bias is not None)
-                        ).to(device)
-                        new_base_layer.weight.data = current_weight
-                        if current_bias is not None:
-                            new_base_layer.bias.data = current_bias
-                            new_base_layer.bias.requires_grad = False
-                        new_base_layer.weight.requires_grad = False
-                        
+                        new_base_layer = layer.old_linear
                     else:  # Conv2dAdapt
-                        current_weight = (layer.old_conv.weight + layer.delta_W.view_as(layer.old_conv.weight)).detach().clone()
-                        current_bias = layer.old_conv.bias.detach().clone() if layer.old_conv.bias is not None else None
-                        original_layer = layer.old_conv
-                        
-                        # Create a new base layer with accumulated weights
-                        new_base_layer = nn.Conv2d(
-                            original_layer.in_channels,
-                            original_layer.out_channels,
-                            original_layer.kernel_size,
-                            stride=original_layer.stride,
-                            padding=original_layer.padding,
-                            dilation=original_layer.dilation,
-                            groups=original_layer.groups,
-                            bias=(current_bias is not None)
-                        ).to(device)
-                        new_base_layer.weight.data = current_weight
-                        if current_bias is not None:
-                            new_base_layer.bias.data = current_bias
-                            new_base_layer.bias.requires_grad = False
-                        new_base_layer.weight.requires_grad = False
+                        new_base_layer = layer.old_conv
                     
-                    # IMPORTANT: Replace the adapted layer with base layer temporarily
+                    # Replace the adapted layer with the consolidated base layer
                     replace_layer_by_name(model, layer_name, new_base_layer)
+                    
                     layer = new_base_layer
                     log.info(f'Consolidated weights into new base layer for {layer_name}')
                 
-                # Now get the layer reference again (in case it was just replaced)
+                # get the layer reference again (in case it was just replaced)
                 layer_dict = dict(model.named_modules())
                 layer = layer_dict[layer_name]
                 
@@ -671,38 +820,53 @@ def main(args):
                 else:
                     log.info(f'Skipping layer {layer_name} (not Linear or Conv2d)')
                     continue
-                
-                # Replace in model
+
                 replace_layer_by_name(model, layer_name, adapted_layer)
                 log.info(f'Replaced layer {layer_name} with adapted version')
             
             log.info('-' * 40)
-            log.info('Setting up optimizer for U parameters only...')
-            
+            log.info('Setting up optimizer for U parameters and current task head...')
+
+            # Check all existed parameters
+            log.info('All model parameters:')
+            for name, param in model.named_parameters():
+                log.info(f'  {name}, shape: {param.shape}, requires_grad: {param.requires_grad}')
+
             # Set requires_grad=False for all parameters first
             for name, param in model.named_parameters():
                 param.requires_grad = False
-            
-            # Then enable only U parameters
+
+            # Then enable grad for U parameters AND current task head
+            trainable_params = []
+            # Extract the base name of last layer (e.g., "fc3" from "fc3.0")
+            last_layer_base = last_layer_names[0].rsplit('.', 1)[0]
+            current_task_head_name = f"{last_layer_base}.{k}"  # e.g., "fc3.1"
+
             for name, param in model.named_parameters():
-                if 'weight_U' in name:
+                # Enable weight_U parameters (but not from last layers)
+                is_from_last_layer = any(name.startswith(ll) for ll in last_layer_names)
+                if 'weight_U' in name and not is_from_last_layer:
                     param.requires_grad = True
-                    log.info(f'Trainable parameter: {name}, shape: {param.shape}')
+                    trainable_params.append(param)
+                    log.info(f'Trainable parameter (U): {name}, shape: {param.shape}')
+                # Enable ALL parameters of current task head only - full training
+                # Check if parameter belongs to current task head (e.g., "fc3.1.weight")
+                elif name.startswith(f"{current_task_head_name}."):
+                    param.requires_grad = True
+                    trainable_params.append(param)
+                    log.info(f'Trainable parameter (task head - FULL): {name}, shape: {param.shape}')
             
-            # Create optimizer only for U parameters
-            u_parameters = [p for n, p in model.named_parameters() if 'weight_U' in n and p.requires_grad]
-            
-            if len(u_parameters) == 0:
-                log.info('Warning: No trainable U parameters found!')
-                log.info('All adaptation ranks might be 0 (no adaptation needed)')
-                # Still create optimizer with model parameters but nothing will update
+            # Create optimizer for U parameters + current task head
+            if len(trainable_params) == 0:
+                log.info('Warning: No trainable parameters found!')
                 base_optimizer = optim.SGD(model.parameters(), lr=args.lr)
             else:
-                log.info(f'Number of trainable U parameters: {len(u_parameters)}')
-                base_optimizer = optim.SGD(u_parameters, lr=args.lr)
+                log.info(f'Number of trainable parameters: {len(trainable_params)}')
+                log.info(f'Total trainable params count: {sum(p.numel() for p in trainable_params)}')
+                base_optimizer = optim.SGD(trainable_params, lr=args.lr)
             
             optimizer = SAM(base_optimizer, model)
-            
+
             log.info('-' * 40)
             
             # Training loop
@@ -745,21 +909,16 @@ def main(args):
             log.info('-' * 40)
             test_loss, test_acc = test(args, model, device, xtest, ytest, criterion, k)
             log.info(f'Test: loss={test_loss:.3f} , acc={test_acc:5.1f}%')
-            
-            # After training, store current task data
-            all_previous_x.append(xtrain.clone())
-            all_previous_y.append(ytrain.clone())
 
-        # save accuracy
+        # save accuracy 
         jj = 0 
         for ii in np.array(task_list)[0:task_id+1]:
-            xtest =data[ii]['test']['x']
-            ytest =data[ii]['test']['y'] 
+            xtest =data[ii]['test']['x'].to(device)
+            ytest =data[ii]['test']['y'].to(device)
             _, acc_matrix[task_id,jj] = test(args, model, device, xtest, ytest,criterion,ii) 
             jj +=1
         log.info('Accuracies =')
         for i_a in range(task_id + 1):
-            # log.info('\t')
             acc_ = ''
             for j_a in range(acc_matrix.shape[1]):
                 # acc_ += '{:5.1f}% '.format(acc_matrix[i_a, j_a])
@@ -767,20 +926,16 @@ def main(args):
             log.info(acc_)
         # update task id 
         task_id +=1
+        
     log.info('-'*50)
     # Simulation Results 
-    # log.info ('Task Order : {}'.format(np.array(task_list)))
-    # log.info ('Final Avg Accuracy: {:5.2f}%'.format(acc_matrix[-1].mean()))
     log.info (f'Task Order : {np.array(task_list)}')
-    log.info (f'Final Avg Accuracy: {acc_matrix[-1].mean():5.2f}%')
+    log.info (f'Final Avg Accuracy (for seed {args.seed}): {acc_matrix[-1].mean():5.2f}%')
     bwt=np.mean((acc_matrix[-1]-np.diag(acc_matrix))[:-1]) 
-    # log.info ('Backward transfer: {:5.2f}%'.format(bwt))
-    # log.info('[Elapsed time = {:.1f} ms]'.format((time.time()-tstart)*1000))
     log.info (f'Backward transfer: {bwt:5.2f}%')
     log.info(f'[Elapsed time = {(time.time()-tstart)*1000:.1f} ms]')
     log.info('-'*50)
     return acc_matrix[-1].mean(), bwt
-
 
 def create_log_dir(path, filename='log.txt'):
     import logging
@@ -788,84 +943,79 @@ def create_log_dir(path, filename='log.txt'):
         os.makedirs(path)
     logger = logging.getLogger(path)
     logger.setLevel(logging.DEBUG)
-    fh = logging.FileHandler(path+'/'+filename)
-    fh.setLevel(logging.DEBUG)
+    # fh = logging.FileHandler(path+'/'+filename)
+    # fh.setLevel(logging.DEBUG)
     ch = logging.StreamHandler()
     ch.setLevel(logging.DEBUG)
-    logger.addHandler(fh)
+    # logger.addHandler(fh)
     logger.addHandler(ch)
     return logger
 
 if __name__ == "__main__":
     # Training parameters
-    parser = argparse.ArgumentParser(description='Sequential CIFAR100 with DFGP')
+    parser = argparse.ArgumentParser(description='five datasets with DFGP')
     parser.add_argument('--batch_size_train', type=int, default=64, metavar='N',
                         help='input batch size for training (default: 64)')
     parser.add_argument('--batch_size_test', type=int, default=64, metavar='N',
                         help='input batch size for testing (default: 64)')
     parser.add_argument('--n_epochs', type=int, default=5, metavar='N',
                         help='number of training epochs/task (default: 200)')
-    parser.add_argument('--seed', type=int, default=1, metavar='S',
-                        help='random seed (default: 1)')
+    parser.add_argument('--seed', type=int, default=37, metavar='S',
+                        help='random seed (default: 37)')
     parser.add_argument('--pc_valid',default=0.05,type=float,
                         help='fraction of training data used for validation')
     # Optimizer parameters
-    parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
+    parser.add_argument('--lr', type=float, default=0.1, metavar='LR',
                         help='learning rate (default: 0.01)')
     parser.add_argument('--momentum', type=float, default=0.9, metavar='M',
                         help='SGD momentum (default: 0.9)')
-    parser.add_argument('--lr_min', type=float, default=1e-5, metavar='LRM',
+    parser.add_argument('--lr_min', type=float, default=1e-3, metavar='LRM',
                         help='minimum lr rate (default: 1e-5)')
-    parser.add_argument('--lr_patience', type=int, default=6, metavar='LRP',
+    parser.add_argument('--lr_patience', type=int, default=5, metavar='LRP',
                         help='hold before decaying lr (default: 6)')
-    parser.add_argument('--lr_factor', type=int, default=2, metavar='LRF',
+    parser.add_argument('--lr_factor', type=int, default=3, metavar='LRF',
                         help='lr decay factor (default: 2)')
-    parser.add_argument('--savename', type=str, default='./logs/CIFAR100/',
+    parser.add_argument('--savename', type=str, default='./logs/FIVE/',
                         help='save path')
-    parser.add_argument('--gpm_thro', type=float, default=0.95, metavar='gradient projection',
-                        help='gpm_thro')
-    parser.add_argument('--mixup_alpha', type=float, default=20, metavar='Alpha',
-                        help='mixup_alpha')
-    parser.add_argument('--mixup_weight', type=float, default=0.1, metavar='Weight',
-                        help='mixup_weight')
+
+    # parser.add_argument('--savename', type=str, default='/mnt/lab-storage/cuong/2509-OCL/test-dfgp/logs/FIVE/',
+    #                     help='save path')
+    parser.add_argument('--gpm_thro', type=float, default=0.95, metavar='THR',
+                        help='projection thr')
+    # parser.add_argument('--mixup_alpha', type=float, default=1, metavar='Alpha',
+    #                     help='mixup_alpha')
+    # parser.add_argument('--mixup_weight', type=float, default=0.1, metavar='Weight',
+    #                     help='mixup_weight')
 
     parser.add_argument('--eps_1', type=float, default=0.01, metavar='Epsilon_1',
                         help='epsilon_1 for SVD')
+    parser.add_argument('--debug_task_id',default=3,type=float,
+                        help='fraction of training data used for validation')
 
     args = parser.parse_args()
     str_time_ = time.strftime('%Y%m%d_%H%M%S', time.localtime(time.time()))
     # log = create_log_dir(args.savename, 'log_{}.txt'.format(str_time_))
     log = create_log_dir(args.savename, f'log_{str_time_}.txt')
 
-    # for mixup_weight in [0.01, 0.001, 0.0001]:
-    #     for thro_ in [0.94, 0.95, 0.96]:
+    accs, bwts = [], []
+    for seed_ in [1, 2, 3, 4, 37]:
+        try:
+            args.seed = seed_
+            log.info('=' * 100)
+            log.info('Arguments =')
+            log.info(str(args))
+            log.info('=' * 100)
 
-    for mixup_weight in [0.0001]:
-        for thro_ in [0.96]: # no need thro_ here because it is from DFGP
+            acc, bwt = main(args)
+            accs.append(acc)
+            bwts.append(bwt)
+        except Exception as e:
+            log.error(f"seed {seed_} Error: {type(e).__name__}: {str(e)}")
+            import traceback
+            log.error(traceback.format_exc())
 
-            accs, bwts = [], []
-            args.mixup_weight = mixup_weight
-            args.thro = thro_
 
-            str_time = str_time_ + '_' + str(mixup_weight) +  '_' + str(thro_)
 
-            # for seed_ in [1, 2]:
-            for seed_ in [1]:
-                try:
-                    args.seed = seed_
-                    log.info('=' * 100)
-                    log.info('Arguments =')
-                    log.info(str(args))
-                    log.info('=' * 100)
 
-                    train_begin_time = time.time()
-                    acc, bwt = main(args)
-                    print(time.time() - train_begin_time)
-                    log.info(f"time cost = {str(time.time() - train_begin_time)}")
 
-                    accs.append(acc)
-                    bwts.append(bwt)
-                except Exception as e:
-                    log.error(f"seed {seed_} Error: {type(e).__name__}: {str(e)}")
-                    import traceback
-                    log.error(traceback.format_exc())
+

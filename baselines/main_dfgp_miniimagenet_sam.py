@@ -106,138 +106,7 @@ def adjust_learning_rate(optimizer, epoch, args):
             param_group['lr']=args.lr
         else:
             param_group['lr'] /= args.lr_factor  
-# def beta_distributions(size, alpha=1):
-#     return np.random.beta(alpha, alpha, size=size)
-# class AugModule(nn.Module):
-#     def __init__(self):
-#         super(AugModule, self).__init__()
-#     def forward(self, xs, lam, y, index):
-#         x_ori = xs
-#         N = x_ori.size()[0]
-#         x_ori_perm = x_ori[index, :]
-#         lam = lam.view((N, 1, 1, 1)).expand_as(x_ori)
-#         x_mix = (1 - lam) * x_ori + lam * x_ori_perm
-#         y_a, y_b = y, y[index]
-#         return x_mix, y_a, y_b
-# def mixup_criterion(criterion, pred, y_a, y_b, lam):
-#     loss_a = lam * criterion(pred, y_a)
-#     loss_b = (1 - lam) * criterion(pred, y_b)
-#     return loss_a.mean() + loss_b.mean()
 
-
-# def train(args, model, device, x,y, optimizer,criterion, task_id):
-#     model.train()
-#     r=np.arange(x.size(0))
-#     np.random.shuffle(r)
-#     # r=torch.LongTensor(r).to(device)
-#     r = torch.LongTensor(r) # DEBUG
-#     aug_model = AugModule()
-#     # Loop batches
-#     for i in range(0,len(r),args.batch_size_train):
-#         if i+args.batch_size_train<=len(r): b=r[i:i+args.batch_size_train]
-#         else: b=r[i:]
-#         data = x[b]
-#         raw_data, raw_target = data.to(device), y[b].to(device)
-
-#         # Data Perturbation Step
-#         # initialize lamb mix:
-#         N = data.shape[0]
-#         lam = (beta_distributions(size=N, alpha=args.mixup_alpha)).astype(np.float32)
-#         lam_adv = Variable(torch.from_numpy(lam)).to(device)
-#         lam_adv = torch.clamp(lam_adv, 0, 1)  # clamp to range [0,1)
-#         lam_adv.requires_grad = True
-
-#         # index = torch.randperm(N).cuda()
-#         index = torch.randperm(N).to(device) # DEBUG
-#         # initialize x_mix
-#         mix_inputs, mix_targets_a, mix_targets_b = aug_model(raw_data, lam_adv, raw_target, index)
-
-#         # Weight and Data Ascent Step
-#         output1 = model(raw_data)[task_id]
-#         output2 = model(mix_inputs)[task_id]
-#         loss = criterion(output1, raw_target) + args.mixup_weight * mixup_criterion(criterion, output2, mix_targets_a, mix_targets_b, lam_adv.detach())
-#         loss.backward()
-#         grad_lam_adv = lam_adv.grad.data
-#         grad_norm = torch.norm(grad_lam_adv, p=2) + 1.e-16
-#         lam_adv.data.add_(grad_lam_adv * 0.05 / grad_norm)  # gradient assend by SAM
-#         lam_adv = torch.clamp(lam_adv, 0, 1)
-#         optimizer.perturb_step()
-
-#         # Weight Descent Step
-#         mix_inputs, mix_targets_a, mix_targets_b = aug_model(raw_data, lam_adv, raw_target, index)
-#         mix_inputs = mix_inputs.detach()
-#         lam_adv = lam_adv.detach()
-
-#         output1 = model(raw_data)[task_id]
-#         output2 = model(mix_inputs)[task_id]
-#         loss = criterion(output1, raw_target) + args.mixup_weight * mixup_criterion(criterion, output2, mix_targets_a, mix_targets_b, lam_adv.detach())
-#         loss.backward()
-#         optimizer.unperturb_step()
-
-#         # Update
-#         optimizer.step()
-# def train_projected(args,model,device,x,y,optimizer,criterion,feature_mat,task_id):
-#     model.train()
-#     r=np.arange(x.size(0))
-#     np.random.shuffle(r)
-#     r=torch.LongTensor(r).to(device)
-#     # r = torch.LongTensor(r) # DEBUG
-#     aug_model = AugModule()
-#     # Loop batches
-#     for i in range(0,len(r),args.batch_size_train):
-#         if i+args.batch_size_train<=len(r): b=r[i:i+args.batch_size_train]
-#         else: b=r[i:]
-#         data = x[b]
-#         data, target = data.to(device), y[b].to(device)
-#         raw_data, raw_target = data.to(device), y[b].to(device)
-
-#         # Data Perturbation Step
-#         # initialize lamb mix:
-#         N = data.shape[0]
-#         lam = (beta_distributions(size=N, alpha=args.mixup_alpha)).astype(np.float32)
-#         lam_adv = Variable(torch.from_numpy(lam)).to(device)
-#         lam_adv = torch.clamp(lam_adv, 0, 1)  # clamp to range [0,1)
-#         lam_adv.requires_grad = True
-
-#         # index = torch.randperm(N).cuda()
-#         index = torch.randperm(N).to(device) # DEBUG
-#         # initialize x_mix
-#         mix_inputs, mix_targets_a, mix_targets_b = aug_model(raw_data, lam_adv, raw_target, index)
-
-#         # Weight and Data Ascent Step
-#         output1 = model(raw_data)[task_id]
-#         output2 = model(mix_inputs)[task_id]
-#         loss = criterion(output1, raw_target) + args.mixup_weight * mixup_criterion(criterion, output2, mix_targets_a, mix_targets_b, lam_adv.detach())
-#         loss.backward()
-#         grad_lam_adv = lam_adv.grad.data
-#         grad_norm = torch.norm(grad_lam_adv, p=2) + 1.e-16
-#         lam_adv.data.add_(grad_lam_adv * 0.05 / grad_norm)  # gradient assend by SAM
-#         lam_adv = torch.clamp(lam_adv, 0, 1)
-#         optimizer.perturb_step()
-
-#         # Weight Descent Step
-#         mix_inputs, mix_targets_a, mix_targets_b = aug_model(raw_data, lam_adv, raw_target, index)
-#         mix_inputs = mix_inputs.detach()
-#         lam_adv = lam_adv.detach()
-
-#         output1 = model(raw_data)[task_id]
-#         output2 = model(mix_inputs)[task_id]
-#         loss = criterion(output1, raw_target) + args.mixup_weight * mixup_criterion(criterion, output2, mix_targets_a, mix_targets_b, lam_adv.detach())
-#         loss.backward()
-#         optimizer.unperturb_step()
-
-#         # Gradient Projections
-#         kk = 0 
-#         for k, (m,params) in enumerate(model.named_parameters()):
-#             if len(params.size())==4 and 'weight' in m:
-#                 sz =  params.grad.data.size(0)
-#                 params.grad.data = params.grad.data - torch.mm(params.grad.data.view(sz,-1), feature_mat[kk]).view(params.size())
-#                 kk+=1
-#             elif len(params.size())==1 and task_id !=0:
-#                 params.grad.data.fill_(0)
-
-#         # Update
-#         optimizer.step()
 
 
 # Debug 2: New train, train_projected using SAM
@@ -364,122 +233,6 @@ def update_GradientMemory (model, mat_list, threshold, feature_list=[],):
 
 # End Debug 2: 
 
-# Debug 3: New train, train_projected using SGD.
-
-# def train(args, model, device, x, y, optimizer, criterion, task_id):
-#     model.train()
-#     r = np.arange(x.size(0))
-#     np.random.shuffle(r)
-#     r = torch.LongTensor(r)
-    
-#     # Loop batches
-#     for i in range(0, len(r), args.batch_size_train):
-#         if i + args.batch_size_train <= len(r): 
-#             b = r[i:i + args.batch_size_train]
-#         else: 
-#             b = r[i:]
-        
-#         data = x[b].to(device)
-#         target = y[b].to(device)
-
-#         # Standard SGD training
-#         optimizer.zero_grad()
-#         output = model(data)[task_id]
-#         loss = criterion(output, target)
-#         loss.backward()
-#         optimizer.step()
-
-# def train_projected(args, model, device, x, y, optimizer, criterion, feature_mat, task_id):
-#     model.train()
-#     r = np.arange(x.size(0))
-#     np.random.shuffle(r)
-#     r = torch.LongTensor(r).to(device)
-    
-#     # Loop batches
-#     for i in range(0, len(r), args.batch_size_train):
-#         if i + args.batch_size_train <= len(r): 
-#             b = r[i:i + args.batch_size_train]
-#         else: 
-#             b = r[i:]
-        
-#         data = x[b].to(device)
-#         target = y[b].to(device)
-
-#         # Standard SGD training
-#         optimizer.zero_grad()
-#         output = model(data)[task_id]
-#         loss = criterion(output, target)
-#         loss.backward()
-
-#         # Gradient Projections 
-#         kk = 0 
-#         for k, (m,params) in enumerate(model.named_parameters()):
-#             if len(params.size())==4 and 'weight' in m:
-#                 sz =  params.grad.data.size(0)
-#                 params.grad.data = params.grad.data - torch.mm(params.grad.data.view(sz,-1), feature_mat[kk]).view(params.size())
-#                 kk+=1
-#             elif len(params.size())==1 and task_id !=0:
-#                 params.grad.data.fill_(0)
-
-#         optimizer.step()
-
-# def update_GradientMemory(model, mat_list, threshold, feature_list=[]):
-#     log.info(f"Threshold: {threshold}")
-#     if not feature_list:
-#         # After First Task 
-#         for i in range(len(mat_list)):
-#             activation = mat_list[i]
-#             U, S, Vh = np.linalg.svd(activation, full_matrices=False)
-#             sval_total = (S**2).sum()
-#             sval_ratio = (S**2)/sval_total
-#             r = np.sum(np.cumsum(sval_ratio) < threshold[i])
-#             feature_list.append(U[:, 0:r])
-#     else:
-#         for i in range(len(mat_list)):
-#             activation = mat_list[i]
-#             U1, S1, Vh1 = np.linalg.svd(activation, full_matrices=False)
-#             sval_total = (S1**2).sum()
-#             act_hat = activation - np.dot(np.dot(feature_list[i], feature_list[i].transpose()), activation)
-            
-#             # Try SVD with error handling
-#             try:
-#                 U, S, Vh = np.linalg.svd(act_hat, full_matrices=False)
-#             except np.linalg.LinAlgError:
-#                 log.info(f'SVD did not converge for layer {i+1}, skipping update')
-#                 continue
-            
-#             sval_hat = (S**2).sum()
-#             sval_ratio = (S**2)/sval_total               
-#             accumulated_sval = (sval_total - sval_hat)/sval_total
-            
-#             r = 0
-#             for ii in range(sval_ratio.shape[0]):
-#                 if accumulated_sval < threshold[i]:
-#                     accumulated_sval += sval_ratio[ii]
-#                     r += 1
-#                 else:
-#                     break
-            
-#             if r == 0:
-#                 log.info(f'Skip Updating GPM for layer: {i+1}')
-#                 continue
-            
-#             Ui = np.hstack((feature_list[i], U[:, 0:r]))
-#             if Ui.shape[1] > Ui.shape[0]:
-#                 feature_list[i] = Ui[:, 0:Ui.shape[0]]
-#             else:
-#                 feature_list[i] = Ui
-    
-#     log.info('-'*40)
-#     log.info('Gradient Constraints Summary')
-#     log.info('-'*40)
-#     for i in range(len(feature_list)):
-#         log.info(f'Layer {i+1} : {feature_list[i].shape[1]}/{feature_list[i].shape[0]}')
-#     log.info('-'*40)
-#     return feature_list
-
-# End Debug 3
-
 def test(args, model, device, x, y, criterion, task_id):
     model.eval()
     total_loss = 0
@@ -588,7 +341,7 @@ def get_representation_matrix_ResNet18 (net, device, x, y=None):
 def main(args):
     tstart=time.time()
     ## Device Setting 
-    device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:7" if torch.cuda.is_available() else "cpu")
     # torch.manual_seed(args.seed)
     # np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -646,9 +399,6 @@ def main(args):
             base_optimizer = optim.SGD(model.parameters(), lr=lr)
             optimizer = SAM(base_optimizer, model)
 
-            # Debug 3: Using SGD optimizer
-            # optimizer = base_optimizer
-
             for epoch in range(1, args.n_epochs+1):
                 # Train
                 clock0=time.time()
@@ -677,8 +427,6 @@ def main(args):
                             break
                         patience=args.lr_patience
                         adjust_learning_rate(optimizer.optimizer, epoch, args)
-                        # Debug 3: Using SGD optimizer
-                        # adjust_learning_rate(optimizer, epoch, args)
             set_model_(model,best_model)
             # Test
             log.info ('-'*40)
@@ -691,9 +439,6 @@ def main(args):
         else:
             base_optimizer = optim.SGD(model.parameters(), lr=lr)
             optimizer = SAM(base_optimizer, model)
-
-            # Debug 3: Using SGD optimizer
-            # optimizer = base_optimizer
 
             feature_mat = []
             # Projection Matrix Precomputation
@@ -731,8 +476,6 @@ def main(args):
                             break
                         patience=args.lr_patience
                         adjust_learning_rate(optimizer.optimizer, epoch, args)
-                        # Debug 3: Using SGD optimizer
-                        # adjust_learning_rate(optimizer, epoch, args)
             set_model_(model,best_model)
             # Test 
             test_loss, test_acc = test(args, model, device, xtest, ytest,  criterion,k)
@@ -764,7 +507,7 @@ def main(args):
     # log.info ('Task Order : {}'.format(np.array(task_list)))
     # log.info ('Final Avg Accuracy: {:5.2f}%'.format(acc_matrix[-1].mean()))
     log.info (f'Task Order : {np.array(task_list)}')
-    log.info (f'Final Avg Accuracy: {acc_matrix[-1].mean():5.2f}%')
+    log.info (f'Final Avg Accuracy for seed {args.seed}: {acc_matrix[-1].mean():5.2f}%')
     bwt=np.mean((acc_matrix[-1]-np.diag(acc_matrix))[:-1]) 
     # log.info ('Backward transfer: {:5.2f}%'.format(bwt))
     # log.info('[Elapsed time = {:.1f} ms]'.format((time.time()-tstart)*1000))
@@ -778,11 +521,11 @@ def create_log_dir(path, filename='log.log'):
         os.makedirs(path)
     logger = logging.getLogger(path)
     logger.setLevel(logging.DEBUG)
-    fh = logging.FileHandler(path+'/'+filename)
-    fh.setLevel(logging.DEBUG)
+    # fh = logging.FileHandler(path+'/'+filename)
+    # fh.setLevel(logging.DEBUG)
     ch = logging.StreamHandler()
     ch.setLevel(logging.DEBUG)
-    logger.addHandler(fh)
+    # logger.addHandler(fh)
     logger.addHandler(ch)
     return logger
 
@@ -831,11 +574,9 @@ if __name__ == "__main__":
     # for mixup_weight in [0.0001]:
 
     accs, bwts = [], []
-    str_time = str_time_ + '_' + 'sam or sgd'
-    # args.mixup_weight = mixup_weight
 
-    # for seed_ in [1, 2]:
-    for seed_ in [1]:
+    for seed_ in [2, 3, 4, 37]:
+    # for seed_ in [1, 2, 3, 4, 37]:
         try:
             args.seed = seed_
             log.info('=' * 100)
