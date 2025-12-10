@@ -125,7 +125,7 @@ def test(args, model, device, x, y, criterion, task_id):
     r=np.arange(x.size(0))
     np.random.shuffle(r)
     r=torch.LongTensor(r).to(device)
-    # r = torch.LongTensor(r) # DEBUG
+    # r = torch.LongTensor(r)
     with torch.no_grad():
         # Loop batches
         for i in range(0,len(r),args.batch_size_test):
@@ -145,7 +145,7 @@ def test(args, model, device, x, y, criterion, task_id):
     final_loss = total_loss / total_num
     return final_loss, acc
 
-# DEBUG: Adapt code
+# Adaptations
 def im2col(input_tensor, kernel_size, stride, device):
     """
     Converts the input tensor into columns.
@@ -279,23 +279,17 @@ class LinearAdapt(nn.Module):
         S_X_squared.clamp(min=0.0)  # in-place clamping since matrix is psd
         V_Xt = V_X.T 
         S_X = torch.sqrt(S_X_squared)
-        # print(f"Singular values: {S_X}")
 
         eps_tol = eps_rel_tol * S_X.sum()
         print(f"{eps_rel_tol = } - {eps_tol = }")
         zero_rank = torch.sum(S_X <= eps_tol).item()
-        # DEBUG: test truncated
-        # zero_rank = 5
 
         if zero_rank == 0:
 
             self.weight_U = None
             self.weight_V = None
         else:
-            # print(f"V_Xt before truncate = {V_Xt} - shape = {V_Xt.shape}")
             V_Xt = V_Xt[:zero_rank, :]
-            # V_Xt = V_Xt[-zero_rank:, :]
-            # print(f"V_Xt after truncate = {V_Xt} - shape = {V_Xt.shape}")
             # not trainable parameter
             self.weight_V = nn.Parameter(V_Xt.T, requires_grad=False)
             # trainable parameter initialized to zero
@@ -348,22 +342,17 @@ class Conv2dAdapt(nn.Module):
         S_X_squared.clamp(min=0.0)  # in-place clamping since matrix is psd
         V_Xt = V_X.T
         S_X = torch.sqrt(S_X_squared)
-        # print(f"Singular values: {S_X}")
 
         eps_tol = eps_rel_tol * S_X.sum()
         print(f"{S_X.sum() = }")
         print(f"{eps_rel_tol = } - {eps_tol = }")
         zero_rank = torch.sum(S_X <= eps_tol).item()
-        # DEBUG: test truncated
-        # zero_rank = 10
 
         if zero_rank == 0:
             self.weight_U = None
             self.weight_V = None
         else:
-            # print(f"V_Xt before truncate = {V_Xt} - shape = {V_Xt.shape}")
             V_Xt = V_Xt[:zero_rank, :]
-            # print(f"V_Xt after truncate = {V_Xt} - shape = {V_Xt.shape}")
             # not trainable parameter
             self.weight_V = nn.Parameter(V_Xt.T, requires_grad=False)
             # trainable parameter initialized to zero
@@ -403,10 +392,6 @@ class Conv2dAdapt(nn.Module):
                         padding=self.old_conv.padding,
                         dilation=self.old_conv.dilation,
                         groups=self.old_conv.groups)
-
-# END DEBUG
-
-# Debug 3: New train, train_projected using SGD.
 
 def train(args, model, device, x, y, optimizer, criterion, task_id):
     model.train()
@@ -457,23 +442,19 @@ def train_task_i(args, model, device, x, y, optimizer, criterion, task_id):
         loss.backward()
         optimizer.step()
 
-# End Debug 3
-
 
 def main(args):
     tstart=time.time()
     ## Device Setting 
-    device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    # random.seed(seed)
     torch.cuda.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)  # For multi-GPU setups
+    torch.cuda.manual_seed_all(args.seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
     def get_last_layer_names(model):
-        """Returns names of the last layer(s) - typically task-specific heads"""
         last_layers = []
         for name, module in model.named_modules():
             if isinstance(module, nn.ModuleList):
@@ -482,7 +463,7 @@ def main(args):
                     last_layers.append(f"{parent_name}.{idx}")
         return last_layers
     
-    ## Load CIFAR100 DATASET
+    ## Load miniImageNet DATASET
     from dataloader import five_datasets as data_loader
     data,taskcla,inputsize=data_loader.get(pc_valid=args.pc_valid)
 
@@ -496,8 +477,6 @@ def main(args):
 
 
     for k,ncla in taskcla:
-        # specify threshold hyperparameter
-        threshold = np.array([args.gpm_thro] * 20)
      
         log.info('*'*100)
         log.info(f'Task {k:2d} ({data[k]["name"]:s})')
@@ -526,16 +505,13 @@ def main(args):
  
             best_model=get_model(model)
             feature_list =[]
-            # optimizer = optim.SGD(model.parameters(), lr=lr)
             if args.optimizer == 'sgd':
-                base_optimizer = optim.SGD(model.parameters(), lr=args.lr)
+                base_optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
             elif args.optimizer == 'sgdm':
-                # Debug 4: use SGD with momentum
-                base_optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
+                base_optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.weight_decay)
             elif args.optimizer == 'adam':
-                base_optimizer = optim.Adam(model.parameters(), lr=args.lr)
+                base_optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-            # Debug 3 and 4: use SGD
             optimizer = base_optimizer
 
             for epoch in range(1, args.n_epochs+1):
@@ -562,7 +538,6 @@ def main(args):
                             break
                         patience=args.lr_patience
 
-                        # Debug 3 and 4: adjust learning rate for SGD
                         adjust_learning_rate(optimizer, epoch, args)
             set_model_(model,best_model)
             # Test
@@ -572,7 +547,7 @@ def main(args):
             all_previous_y.append(ytrain.clone())
             log.info(f'Test: loss={test_loss:.3f} , acc={test_acc:5.1f}%')
 
-            # DEBUG: Check weight after training
+            # Check weight after training
             log.info('='*60)
             log.info(f'AFTER TASK {task_id} TRAINING - Weight Statistics (with adaptations):')
             for name, module in model.named_modules():
@@ -595,16 +570,16 @@ def main(args):
                     log.info(f'  weight: mean={module.weight.data.mean().item():.6f}, norm={module.weight.data.norm().item():.6f}')
             log.info('='*60)
 
-        elif task_id < args.debug_task_id:
+        # elif task_id < args.debug_task_id:
 
-        # else:  # task_id > 0
+        else:  # task_id > 0
             log.info('Adapting model for new task...')
 
             # Get last layer names for current model
             last_layer_names = get_last_layer_names(model)
             log.info(f'Detected last layer names: {last_layer_names}')
             
-            # DEBUG: Check weight before training
+            # Check weight before training
             log.info('='*60)
             log.info(f'BEFORE TASK {task_id} (before consolidation) - Weight Statistics:')
             for name, module in model.named_modules():
@@ -623,18 +598,15 @@ def main(args):
                     log.info(f'  effective weight: mean={effective_weight.data.mean().item():.6f}, norm={effective_weight.data.norm().item():.6f}')
             log.info('='*60)
             
-            # Concatenate all previous task data
             X_prev = torch.cat(all_previous_x, dim=0)
             Y_prev = torch.cat(all_previous_y, dim=0)
             log.info(f'Previous data shape: {X_prev.shape}, {Y_prev.shape}')
             
-            # List of layer names to adapt (all linear and conv layers except last layers)
             layers_to_adapt = []
             for name, module in model.named_modules():
                 if 'old_conv' in name or 'old_linear' in name:
                     continue
-                    
-                # Check if this is a last layer
+                
                 is_last_layer = any(name.startswith(ll) for ll in last_layer_names)
                 
                 if isinstance(module, (nn.Linear, nn.Conv2d)) and not is_last_layer:
@@ -648,7 +620,6 @@ def main(args):
             for layer_idx, layer_name in enumerate(layers_to_adapt):
                 log.info(f'Processing layer {layer_idx + 1}: {layer_name}')
                 
-                # Get the actual layer from model
                 layer_dict = dict(model.named_modules())
                 
                 if layer_name not in layer_dict:
@@ -657,34 +628,27 @@ def main(args):
                 else:
                     layer = layer_dict[layer_name]
                 
-                # Extract original layer and consolidate weights if already adapted
                 if isinstance(layer, (LinearAdapt, Conv2dAdapt)):
                     log.info(f'Layer {layer_name} is already adapted, merging weights')
                     
-                    # Merge the adaptation (U @ V^T) into the base weights
                     layer.merge_weights()
                     
-                    # Extract the consolidated base layer
                     if isinstance(layer, LinearAdapt):
                         new_base_layer = layer.old_linear
-                    else:  # Conv2dAdapt
+                    else:
                         new_base_layer = layer.old_conv
                     
-                    # Replace the adapted layer with the consolidated base layer
                     replace_layer_by_name(model, layer_name, new_base_layer)
                     
                     layer = new_base_layer
                     log.info(f'Consolidated weights into new base layer for {layer_name}')
                 
-                # get the layer reference again (in case it was just replaced)
                 layer_dict = dict(model.named_modules())
                 layer = layer_dict[layer_name]
                 
-                # Create a data loader from previous task data
                 prev_dataset = TensorDataset(X_prev, Y_prev)
                 prev_loader = DataLoader(prev_dataset, batch_size=args.batch_size_train, shuffle=False)
                 
-                # Get cross inputs (X^T @ X matrix)
                 log.info(f'Computing cross inputs for {layer_name}...')
                 cross_inputs = get_inputs(
                     network=model,
@@ -725,48 +689,40 @@ def main(args):
             # Set requires_grad=False for all parameters first
             for name, param in model.named_parameters():
                 param.requires_grad = False
-
-            # Then enable grad for U parameters AND current task head
             trainable_params = []
             # Extract the base name of last layer (e.g., "fc3" from "fc3.0")
             last_layer_base = last_layer_names[0].rsplit('.', 1)[0]
             current_task_head_name = f"{last_layer_base}.{k}"  # e.g., "fc3.1"
 
             for name, param in model.named_parameters():
-                # Enable weight_U parameters (but not from last layers)
                 is_from_last_layer = any(name.startswith(ll) for ll in last_layer_names)
                 if 'weight_U' in name and not is_from_last_layer:
                     param.requires_grad = True
                     trainable_params.append(param)
                     log.info(f'Trainable parameter (U): {name}, shape: {param.shape}')
-                # Enable ALL parameters of current task head only - full training
                 # Check if parameter belongs to current task head (e.g., "fc3.1.weight")
                 elif name.startswith(f"{current_task_head_name}."):
                     param.requires_grad = True
                     trainable_params.append(param)
                     log.info(f'Trainable parameter (task head - FULL): {name}, shape: {param.shape}')
             
-            # Create optimizer for U parameters + current task head
             if len(trainable_params) == 0:
                 log.info('Warning: No trainable parameters found!')
                 if args.optimizer == 'sgd':
-                    base_optimizer = optim.SGD(model.parameters(), lr=args.lr)
+                    base_optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
                 elif args.optimizer == 'sgdm':
-                    # Debug 4: use SGD with momentum
-                    base_optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
+                    base_optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.weight_decay)
                 elif args.optimizer == 'adam':
-                    base_optimizer = optim.Adam(model.parameters(), lr=args.lr)
+                    base_optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
             else:
                 log.info(f'Number of trainable parameters: {len(trainable_params)}')
                 log.info(f'Total trainable params count: {sum(p.numel() for p in trainable_params)}')
                 if args.optimizer == 'sgd':
-                    base_optimizer = optim.SGD(trainable_params, lr=args.lr)
+                    base_optimizer = optim.SGD(trainable_params, lr=args.lr, weight_decay=args.weight_decay)
                 elif args.optimizer == 'sgdm':
-                    # Debug 4: use SGD with momentum
-                    base_optimizer = optim.SGD(trainable_params, lr=args.lr, momentum=0.9)
+                    base_optimizer = optim.SGD(trainable_params, lr=args.lr, momentum=0.9, weight_decay=args.weight_decay)
                 elif args.optimizer == 'adam':
-                    base_optimizer = optim.Adam(trainable_params, lr=args.lr)
-            # Debug 3: use SGD
+                    base_optimizer = optim.Adam(trainable_params, lr=args.lr, weight_decay=args.weight_decay)
             optimizer = base_optimizer
 
             log.info('-' * 40)
@@ -856,7 +812,7 @@ def create_log_dir(path, filename='log.txt'):
 
 if __name__ == "__main__":
     # Training parameters
-    parser = argparse.ArgumentParser(description='five datasets with DFGP')
+    parser = argparse.ArgumentParser(description='five datasets with NESS')
     parser.add_argument('--batch_size_train', type=int, default=64, metavar='N',
                         help='input batch size for training (default: 64)')
     parser.add_argument('--batch_size_test', type=int, default=64, metavar='N',
@@ -880,22 +836,17 @@ if __name__ == "__main__":
                         help='lr decay factor (default: 2)')
     parser.add_argument('--savename', type=str, default='./logs/FIVE/',
                         help='save path')
-
-    # parser.add_argument('--savename', type=str, default='/mnt/lab-storage/cuong/2509-OCL/test-dfgp/logs/FIVE/',
-    #                     help='save path')
     parser.add_argument('--gpm_thro', type=float, default=0.95, metavar='THR',
                         help='projection thr')
-    # parser.add_argument('--mixup_alpha', type=float, default=1, metavar='Alpha',
-    #                     help='mixup_alpha')
-    # parser.add_argument('--mixup_weight', type=float, default=0.1, metavar='Weight',
-    #                     help='mixup_weight')
-
+    # NESS parameters
     parser.add_argument('--eps_1', type=float, default=0.01, metavar='Epsilon_1',
                         help='epsilon_1 for SVD')
     parser.add_argument('--debug_task_id',default=3,type=float,
                         help='fraction of training data used for validation')
     parser.add_argument('--optimizer', type=str, default='sgdm',
                         help='optimizer type: sgdm, adam, sgd')
+    parser.add_argument('--weight_decay', type=float, default=0.0001,
+                        help='weight decay for optimizer')
 
     args = parser.parse_args()
     str_time_ = time.strftime('%Y%m%d_%H%M%S', time.localtime(time.time()))
@@ -904,7 +855,6 @@ if __name__ == "__main__":
 
     accs, bwts = [], []
 
-    # for seed_ in [1, 2]:
     for seed_ in [1, 2, 3, 4, 37]:
         try:
             args.seed = seed_
