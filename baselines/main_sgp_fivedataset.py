@@ -347,7 +347,7 @@ def update_SGP (args, model, mat_list, threshold, task_id, feature_list=[], impo
 def main(args):
     tstart=time.time()
     ## Device Setting 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print (device)
     ## setup seeds
     # os.environ['PYTHONHASHSEED'] = str(seed)
@@ -509,7 +509,7 @@ def main(args):
     # Simulation Results 
     # print ('Task Order : {}'.format(np.array(task_list)))
     # print("Configs: seed: {} | lr: {} | gpm_eps: {} | gpm_eps_inc: {} | scale_coff: {}".format(args.seed,args.lr,args.gpm_eps,args.gpm_eps_inc,args.scale_coff)) 
-    print ('Final Avg Accuracy: {:5.2f}%'.format(acc_matrix[-1].mean())) 
+    print ('Final Avg Accuracy for seed {}: {:5.2f}%'.format(args.seed, acc_matrix[-1].mean())) 
     bwt=np.mean((acc_matrix[-1]-np.diag(acc_matrix))[:-1]) 
     print ('Backward transfer: {:5.2f}%'.format(bwt))
     print('[Elapsed time = {:.1f} ms]'.format((time.time()-tstart)*1000))
@@ -549,10 +549,12 @@ if __name__ == "__main__":
 
 
     args = parser.parse_args()
-    print('='*100)
-    print('Arguments =')
-    for arg in vars(args):
-        print('\t'+arg+':',getattr(args,arg))
-    print('='*100)
+    for seed_ in [1, 2, 3, 4, 37]:
+        args.seed = seed_
+        print('='*100)
+        print('Arguments =')
+        for arg in vars(args):
+            print('\t'+arg+':',getattr(args,arg))
+        print('='*100)
 
-    main(args)
+        main(args)

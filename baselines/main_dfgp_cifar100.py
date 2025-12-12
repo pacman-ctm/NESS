@@ -127,7 +127,7 @@ def train(args, model, device, x,y, optimizer,criterion, task_id):
     r=np.arange(x.size(0))
     np.random.shuffle(r)
     # r=torch.LongTensor(r).to(device)
-    r = torch.LongTensor(r) # DEBUG
+    r = torch.LongTensor(r)
     aug_model = AugModule()
     # Loop batches
     for i in range(0,len(r),args.batch_size_train):
@@ -178,7 +178,7 @@ def train_projected(args,model,device,x,y,optimizer,criterion,feature_mat,task_i
     r=np.arange(x.size(0))
     np.random.shuffle(r)
     r=torch.LongTensor(r).to(device)
-    # r = torch.LongTensor(r) # DEBUG
+    # r = torch.LongTensor(r)
     aug_model = AugModule()
     # Loop batches
     for i in range(0,len(r),args.batch_size_train):
@@ -197,7 +197,7 @@ def train_projected(args,model,device,x,y,optimizer,criterion,feature_mat,task_i
         lam_adv.requires_grad = True
 
         # index = torch.randperm(N).cuda()
-        index = torch.randperm(N).to(device) # DEBUG
+        index = torch.randperm(N).to(device)
         # initialize x_mix
         mix_inputs, mix_targets_a, mix_targets_b = aug_model(raw_data, lam_adv, raw_target, index)
 
@@ -241,7 +241,7 @@ def test(args, model, device, x, y, criterion, task_id):
     r=np.arange(x.size(0))
     np.random.shuffle(r)
     r=torch.LongTensor(r).to(device)
-    # r = torch.LongTensor(r) # DEBUG
+    # r = torch.LongTensor(r)
     with torch.no_grad():
         # Loop batches
         for i in range(0,len(r),args.batch_size_test):
@@ -265,7 +265,7 @@ def get_representation_matrix (net, device, x, y=None):
     r=np.arange(x.size(0))
     np.random.shuffle(r)
     r=torch.LongTensor(r).to(device)
-    # r = torch.LongTensor(r) # DEBUG
+    # r = torch.LongTensor(r)
     b=r[0:125] # Take 125 random samples 
     example_data = x[b]
     example_data = example_data.to(device)
@@ -297,14 +297,12 @@ def get_representation_matrix (net, device, x, y=None):
     log.info('Representation Matrix')
     log.info('-'*30)
     for i in range(len(mat_list)):
-        # log.info ('Layer {} : {}'.format(i+1,mat_list[i].shape))
         log.info(f"Layer {i+1} : {mat_list[i].shape}")
     log.info('-'*30)
     return mat_list    
 
 
 def update_GradientMemory (model, mat_list, threshold, feature_list=[],):
-    # log.info ('Threshold: ', threshold) 
     log.info(f"Threshold: {threshold}")
     if not feature_list:
         # After First Task 
@@ -334,7 +332,6 @@ def update_GradientMemory (model, mat_list, threshold, feature_list=[],):
                 else:
                     break
             if r == 0:
-                # log.info ('Skip Updating GPM for layer: {}'.format(i+1))
                 log.info (f'Skip Updating GPM for layer: {i+1}') 
                 continue
             Ui=np.hstack((feature_list[i],U[:,0:r]))
@@ -347,7 +344,6 @@ def update_GradientMemory (model, mat_list, threshold, feature_list=[],):
     log.info('Gradient Constraints Summary')
     log.info('-'*40)
     for i in range(len(feature_list)):
-        # log.info ('Layer {} : {}/{}'.format(i+1,feature_list[i].shape[1], feature_list[i].shape[0]))
         log.info (f'Layer {i+1} : {feature_list[i].shape[1]}/{feature_list[i].shape[0]}')
     log.info('-'*40)
     return feature_list  
@@ -357,13 +353,10 @@ def main(args):
     tstart=time.time()
     ## Device Setting 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    # torch.manual_seed(args.seed)
-    # np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    # random.seed(seed)
     torch.cuda.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)  # For multi-GPU setups
+    torch.cuda.manual_seed_all(args.seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
@@ -380,21 +373,19 @@ def main(args):
         threshold = np.array([args.gpm_thro] * 5)
 
         log.info('*'*100)
-        # log.info('Task {:2d} ({:s})'.format(k,data[k]['name']))
         log.info(f'Task {k:2d} ({data[k]["name"]:s})')
         log.info('*'*100)
-        xtrain=data[k]['train']['x'].to(device) # DEBUG
+        xtrain=data[k]['train']['x'].to(device) 
         ytrain=data[k]['train']['y'].to(device)
-        xvalid=data[k]['valid']['x'].to(device) # DEBUG
+        xvalid=data[k]['valid']['x'].to(device)
         yvalid=data[k]['valid']['y'].to(device)
-        xtest =data[k]['test']['x'].to(device) # DEBUG
+        xtest =data[k]['test']['x'].to(device)
         ytest =data[k]['test']['y'].to(device)
         task_list.append(k)
 
         lr = args.lr 
         best_loss=np.inf
         log.info ('-'*40)
-        # log.info ('Task ID :{} | Learning Rate : {}'.format(task_id, lr))
         log.info (f'Task ID :{task_id} | Learning Rate : {lr}')
         log.info ('-'*40)
         
@@ -417,12 +408,9 @@ def main(args):
                 train(args, model, device, xtrain, ytrain, optimizer, criterion, k)
                 clock1=time.time()
                 tr_loss,tr_acc = test(args, model, device, xtrain, ytrain,  criterion, k)
-                # log.info('Epoch {:3d} | Train: loss={:.3f}, acc={:5.1f}% | time={:5.1f}ms |'.format(epoch,\
-                #                                             tr_loss,tr_acc, 1000*(clock1-clock0)))
                 log.info(f'Epoch {epoch:3d} | Train: loss={tr_loss:.3f}, acc={tr_acc:5.1f}% | time={1000*(clock1-clock0):5.1f}ms |')
                 # Validate
                 valid_loss,valid_acc = test(args, model, device, xvalid, yvalid,  criterion, k)
-                # log.info(' Valid: loss={:.3f}, acc={:5.1f}% |'.format(valid_loss, valid_acc))
                 log.info(f' Valid: loss={valid_loss:.3f}, acc={valid_acc:5.1f}% |')
                 # Adapt lr
                 if valid_loss<best_loss:
@@ -433,7 +421,6 @@ def main(args):
                     patience-=1
                     if patience<=0:
                         lr/=args.lr_factor
-                        # log.info(' lr={:.1e}'.format(lr))
                         log.info(f'lr={lr:.1e}')
                         if lr<args.lr_min:
                             break
@@ -444,7 +431,6 @@ def main(args):
             # Test
             log.info ('-'*40)
             test_loss, test_acc = test(args, model, device, xtest, ytest,  criterion, k)
-            # log.info('Test: loss={:.3f} , acc={:5.1f}%'.format(test_loss,test_acc))
             log.info(f'Test: loss={test_loss:.3f} , acc={test_acc:5.1f}%')
             # Memory Update  
             mat_list = get_representation_matrix (model, device, xtrain, ytrain)
@@ -458,7 +444,6 @@ def main(args):
             # Projection Matrix Precomputation
             for i in range(len(model.act)):
                 Uf=torch.Tensor(np.dot(feature_list[i],feature_list[i].transpose())).to(device)
-                # log.info('Layer {} - Projection Matrix shape: {}'.format(i+1,Uf.shape))
                 log.info(f'Layer {i+1} - Projection Matrix shape: {Uf.shape}')
                 feature_mat.append(Uf)
             log.info ('-'*40)
@@ -468,12 +453,9 @@ def main(args):
                 train_projected(args, model,device,xtrain, ytrain,optimizer,criterion,feature_mat,k)
                 clock1=time.time()
                 tr_loss, tr_acc = test(args, model, device, xtrain, ytrain,criterion,k)
-                # log.info('Epoch {:3d} | Train: loss={:.3f}, acc={:5.1f}% | time={:5.1f}ms |'.format(epoch,\
-                #                                         tr_loss, tr_acc, 1000*(clock1-clock0)))
                 log.info(f'Epoch {epoch:3d} | Train: loss={tr_loss:.3f}, acc={tr_acc:5.1f}% | time={1000*(clock1-clock0):5.1f}ms |')
                 # Validate
                 valid_loss,valid_acc = test(args, model, device, xvalid, yvalid, criterion,k)
-                # log.info(' Valid: loss={:.3f}, acc={:5.1f}% |'.format(valid_loss, valid_acc))
                 log.info(f' Valid: loss={valid_loss:.3f}, acc={valid_acc:5.1f}% |')
                 # Adapt lr
                 if valid_loss<best_loss:
@@ -484,7 +466,6 @@ def main(args):
                     patience-=1
                     if patience<=0:
                         lr/=args.lr_factor
-                        # log.info(' lr={:.1e}'.format(lr))
                         log.info(f'lr={lr:.1e}')
                         if lr<args.lr_min:
                             break
@@ -494,7 +475,6 @@ def main(args):
             set_model_(model,best_model)
             # Test 
             test_loss, test_acc = test(args, model, device, xtest, ytest,  criterion,k)
-            # log.info('Test: loss={:.3f} , acc={:5.1f}%'.format(test_loss,test_acc))
             log.info(f'Test: loss={test_loss:.3f} , acc={test_acc:5.1f}%')
             # Memory Update 
             mat_list = get_representation_matrix (model, device, xtrain, ytrain)
@@ -503,29 +483,23 @@ def main(args):
         # save accuracy
         jj = 0 
         for ii in np.array(task_list)[0:task_id+1]:
-            xtest =data[ii]['test']['x'].to(device) # DEBUG
-            ytest =data[ii]['test']['y'].to(device) # DEBUG
+            xtest =data[ii]['test']['x'].to(device)
+            ytest =data[ii]['test']['y'].to(device)
             _, acc_matrix[task_id,jj] = test(args, model, device, xtest, ytest,criterion,ii) 
             jj +=1
         log.info('Accuracies =')
         for i_a in range(task_id + 1):
-            # log.info('\t')
             acc_ = ''
             for j_a in range(acc_matrix.shape[1]):
-                # acc_ += '{:5.1f}% '.format(acc_matrix[i_a, j_a])
                 acc_ += f'{acc_matrix[i_a, j_a]:5.1f}% '
             log.info(acc_)
         # update task id 
         task_id +=1
     log.info('-'*50)
     # Simulation Results 
-    # log.info ('Task Order : {}'.format(np.array(task_list)))
-    # log.info ('Final Avg Accuracy: {:5.2f}%'.format(acc_matrix[-1].mean()))
     log.info (f'Task Order : {np.array(task_list)}')
     log.info (f'Final Avg Accuracy for seed {args.seed}: {acc_matrix[-1].mean():5.2f}%')
     bwt=np.mean((acc_matrix[-1]-np.diag(acc_matrix))[:-1]) 
-    # log.info ('Backward transfer: {:5.2f}%'.format(bwt))
-    # log.info('[Elapsed time = {:.1f} ms]'.format((time.time()-tstart)*1000))
     log.info (f'Backward transfer: {bwt:5.2f}%')
     log.info(f'[Elapsed time = {(time.time()-tstart)*1000:.1f} ms]')
     log.info('-'*50)
@@ -581,13 +555,10 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     str_time_ = time.strftime('%Y%m%d_%H%M%S', time.localtime(time.time()))
-    # log = create_log_dir(args.savename, 'log_{}.txt'.format(str_time_))
     log = create_log_dir(args.savename, f'log_{str_time_}.log')
 
     for mixup_weight in [0.01, 0.001, 0.0001]:
         # for thro_ in [0.94, 0.95, 0.96]:
-
-    # for mixup_weight in [0.0001]:
         for thro_ in [0.96]:
 
             accs, bwts = [], []

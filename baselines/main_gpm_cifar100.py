@@ -472,7 +472,6 @@ if __name__ == "__main__":
     
     
     for seed_ in [1, 2, 3, 4, 37]:
-    # for seed_ in [1]:
         args = parser.parse_args()
         try:
             args.seed = seed_

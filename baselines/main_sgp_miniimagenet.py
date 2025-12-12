@@ -291,11 +291,32 @@ def update_SGP (args, model, mat_list, threshold, task_id, feature_list=[], impo
             act_proj = np.dot(np.dot(feature_list[i],feature_list[i].transpose()),activation)
             r_old = feature_list[i].shape[1] # old GPM bases 
             Uc,Sc,Vhc = np.linalg.svd(act_proj, full_matrices=False)
-            importance_new_on_old = np.dot(np.dot(feature_list[i].transpose(),Uc[:,0:r_old])**2, Sc[0:r_old]**2) ## r_old no of elm s**2 fmt
+            importance_new_on_old = np.dot(np.dot(feature_list[i].transpose(),Uc[:,0:r_old])**2, Sc[0:r_old]**2)
             importance_new_on_old = np.sqrt(importance_new_on_old)
             
             act_hat = activation - act_proj
-            U,S,Vh = np.linalg.svd(act_hat, full_matrices=False)
+            
+            if np.isnan(act_hat).any() or np.isinf(act_hat).any():
+                print(f'Warning: NaN/Inf detected in act_hat at layer {i+1}, skipping update')
+                importance = importance_new_on_old
+                importance = ((args.scale_coff+1)*importance)/(args.scale_coff*importance + max(importance)) 
+                importance [0:r_old] = np.clip(importance [0:r_old]+importance_list[i][0:r_old], 0, 1)
+                importance_list[i] = importance
+                continue
+            
+            act_hat_reg = act_hat + 1e-10 * np.random.randn(*act_hat.shape)
+            
+            try:
+                U,S,Vh = np.linalg.svd(act_hat_reg, full_matrices=False)
+            except np.linalg.LinAlgError:
+                print(f'Warning: SVD did not converge at layer {i+1}, skipping update')
+                # Keep old feature space, just update importance
+                importance = importance_new_on_old
+                importance = ((args.scale_coff+1)*importance)/(args.scale_coff*importance + max(importance)) 
+                importance [0:r_old] = np.clip(importance [0:r_old]+importance_list[i][0:r_old], 0, 1)
+                importance_list[i] = importance
+                continue
+            
             # criteria (Eq-5)
             sval_hat = (S**2).sum()
             sval_ratio = (S**2)/sval_total               
@@ -336,13 +357,12 @@ def update_SGP (args, model, mat_list, threshold, task_id, feature_list=[], impo
     for i in range(len(feature_list)):
         print ('Layer {} : {}/{}'.format(i+1,feature_list[i].shape[1], feature_list[i].shape[0]))
     print('-'*40)
-    return feature_list, importance_list  
-
+    return feature_list, importance_list
 
 def main(args):
     tstart=time.time()
     ## Device Setting 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print (device)
     ## setup seeds
     # os.environ['PYTHONHASHSEED'] = str(seed)
@@ -353,7 +373,7 @@ def main(args):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
-    ## Load CIFAR100 DATASET
+    ## Load MINI DATASET
     from dataloader import miniimagenet as data_loader
     dataloader = data_loader.DatasetGen(args)
     taskcla, inputsize = dataloader.taskcla, dataloader.inputsize
@@ -506,7 +526,7 @@ def main(args):
     # Simulation Results 
     # print ('Task Order : {}'.format(np.array(task_list)))
     # print("Configs: seed: {} | lr: {} | gpm_eps: {} | gpm_eps_inc: {} | scale_coff: {}".format(args.seed,args.lr,args.gpm_eps,args.gpm_eps_inc,args.scale_coff)) 
-    print ('Final Avg Accuracy: {:5.2f}%'.format(acc_matrix[-1].mean())) 
+    print ('Final Avg Accuracy for seed {}: {:5.2f}%'.format(args.seed, acc_matrix[-1].mean())) 
     bwt=np.mean((acc_matrix[-1]-np.diag(acc_matrix))[:-1]) 
     print ('Backward transfer: {:5.2f}%'.format(bwt))
     print('[Elapsed time = {:.1f} ms]'.format((time.time()-tstart)*1000))
@@ -547,10 +567,12 @@ if __name__ == "__main__":
 
 
     args = parser.parse_args()
-    print('='*100)
-    print('Arguments =')
-    for arg in vars(args):
-        print('\t'+arg+':',getattr(args,arg))
-    print('='*100)
+    for seed_ in [1, 2, 3, 4, 37]:
+        args.seed = seed_
+        print('='*100)
+        print('Arguments =')
+        for arg in vars(args):
+            print('\t'+arg+':',getattr(args,arg))
+        print('='*100)
 
-    main(args)
+        main(args)

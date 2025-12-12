@@ -109,7 +109,7 @@ def adjust_learning_rate(optimizer, epoch, args):
 
 
 
-# Debug 2: New train, train_projected using SAM
+# train, train_projected using SAM without mixup
 def train(args, model, device, x, y, optimizer, criterion, task_id):
     model.train()
     r = np.arange(x.size(0))
@@ -138,7 +138,6 @@ def train(args, model, device, x, y, optimizer, criterion, task_id):
         loss.backward()
         optimizer.unperturb_step()
 
-        # Update
         optimizer.step()
 
 
@@ -555,8 +554,6 @@ if __name__ == "__main__":
                         help='lr decay factor (default: 2)')
     parser.add_argument('--savename', type=str, default='./logs/MINI/',
                         help='save path')
-    # parser.add_argument('--savename', type=str, default='/mnt/lab-storage/cuong/2509-OCL/test-dfgp/logs/MINI/',
-    #                     help='save path')
     parser.add_argument('--gpm_thro', type=float, default=0.97, metavar='gradient projection',
                         help='gpm_thro')
     parser.add_argument('--mixup_alpha', type=float, default=20, metavar='Alpha',
@@ -567,16 +564,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     str_time_ = time.strftime('%Y%m%d_%H%M%S', time.localtime(time.time()))
-    # log = create_log_dir(args.savename, 'log_{}.txt'.format(str_time_))
     log = create_log_dir(args.savename, f'log_{str_time_}.txt')
-
-    # for mixup_weight in [0.0001, 0.01, 0.05, 0.1]:
-    # for mixup_weight in [0.0001]:
 
     accs, bwts = [], []
 
-    for seed_ in [2, 3, 4, 37]:
-    # for seed_ in [1, 2, 3, 4, 37]:
+    for seed_ in [1, 2, 3, 4, 37]:
         try:
             args.seed = seed_
             log.info('=' * 100)
